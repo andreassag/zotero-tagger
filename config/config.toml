@@ -1,0 +1,72 @@
+[llm]
+model_name = "Qwen/Qwen3-8B"
+base_url = "https://api.siliconflow.cn/v1"
+temperature = 0.0
+max_input_tokens = 10000
+
+[llm.rate_limits]
+requests_per_minute = 30
+tokens_per_minute = 100000
+requests_per_day = 1000
+
+[llm.retries]
+max_retries = 3
+backoff_base = 1.0
+
+[zotero]
+library_type = "user"
+
+[zotero.retries]
+max_retries = 3
+backoff_base = 1.0
+
+[zotero.item_types]
+allowed = [
+    "journalArticle", "conferencePaper", "preprint",
+    "thesis", "book", "bookSection"
+]
+
+[processing]
+section_priority = ["abstract", "conclusion", "introduction"]
+intro_paragraphs = 3
+
+[tagging]
+sentinel_tag = "_ai-tagged"
+
+[tagging.controlled_topics]
+topics = [
+    "oral microbiology",
+    "biofilm",
+    "quorum sensing",
+    "antimicrobial resistance",
+    "PCR",
+    "genomics",
+    "metagenomics",
+    "microbiome",
+    "pathogenesis",
+    "virulence factors",
+    "dental caries",
+    "periodontal disease",
+    "endodontics",
+    "taxonomy",
+    "phylogenetics",
+    "clinical microbiology",
+    "antibiotic susceptibility",
+    "whole genome sequencing",
+    "16S rRNA",
+    "MALDI-TOF",
+    "culture methods",
+    "anaerobic microbiology",
+    "polymicrobial infections",
+    "host-microbe interactions",
+    "immunology",
+    "epidemiology",
+    "public health",
+    "food microbiology",
+    "environmental microbiology",
+    "bioinformatics",
+    "machine learning",
+    "proteomics",
+    "metabolomics",
+    "transcriptomics"
+]

@@ -1,0 +1,11 @@
+services:
+  zotero-tagger:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file:
+      - ../.env
+    volumes:
+      - ../config/config.toml:/etc/zotero-tagger/config.toml:ro
+      - ../logs:/var/log/zotero-tagger
+    command: ["tag", "--config", "/etc/zotero-tagger/config.toml"]

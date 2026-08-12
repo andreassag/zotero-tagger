@@ -1,0 +1,29 @@
+# Binaries
+zotero-tagger
+*.exe
+*.exe;
+*.dll
+*.so
+*.dylib
+
+# Test / OS binaries
+*.test
+
+# Output / logs / temp
+*.log
+logs/
+tmp/
+*.pdf
+
+# Environment secrets
+.env
+.env.local
+
+# IDEs & Editors
+.idea/
+.vscode/
+*.swp
+*~
+
+# Go build cache & vendor
+/vendor/
