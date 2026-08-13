@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 
 	"github.com/exterex/zotero-tagger/internal/config"
@@ -78,6 +79,10 @@ func TestCallSync_EmptyChoices(t *testing.T) {
 }
 
 func TestRateLimiter_DailyLimit(t *testing.T) {
+	statePath := getStateFilePath()
+	_ = os.Remove(statePath)
+	defer os.Remove(statePath)
+
 	cfg := config.RateLimitConfig{
 		RequestsPerMinute: 0,
 		TokensPerMinute:   0,

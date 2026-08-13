@@ -1,13 +1,13 @@
 [llm]
 model_name = "Qwen/Qwen3-8B"
-base_url = "https://api.siliconflow.cn/v1"
+base_url = "https://api.siliconflow.com/v1"
 temperature = 0.0
 max_input_tokens = 10000
 
 [llm.rate_limits]
-requests_per_minute = 30
-tokens_per_minute = 100000
-requests_per_day = 1000
+requests_per_minute = 1000
+tokens_per_minute = 50000
+requests_per_day = 10000
 
 [llm.retries]
 max_retries = 3
@@ -37,7 +37,7 @@ sentinel_tag = "_ai-tagged"
 topics = [
     "oral microbiology",
     "biofilm",
-    "quorum sensing",
+    "quorum-sensing",
     "antimicrobial resistance",
     "PCR",
     "genomics",
@@ -68,5 +68,58 @@ topics = [
     "machine learning",
     "proteomics",
     "metabolomics",
-    "transcriptomics"
+    "transcriptomics",
+    "qPCR",
+    "single cell rna seq",
+    "comparative genomics",
+    "horizontal gene transfer",
+    "natural transformation",
+    "bacterial persistence",
+    "peptidoglycan",
+    "outer membrane",
+    "bacterial capsule",
+    "pili fimbriae",
+    "plasmids",
+    "membrane vesicles",
+    "oral microbiome",
+    "gut microbiome",
+    "dysbiosis",
+    "commensalism",
+    "opportunistic infection",
+    "nosocomial infection",
+    "immunocompromised host",
+    "bacteriophage",
+    "archaea",
+    "opportunistic pathogen",
+    "mycobacteria",
+    "fungal microbiome",
+    "periodontitis",
+    "gingivitis",
+    "salivary glands",
+    "gingival crevicular fluid",
+    "oral mucosa",
+    "periodontal ligament",
+    "alveolar bone",
+    "dental pulp",
+    "dental plaque",
+    "enamel dentin",
+    "salivary flow rate",
+    "osseointegration",
+    "salivary mucin",
+    "epithelial barrier",
+    "mucosal immunity",
+    "innate immunity",
+    "adaptive immunity",
+    "cytokine response",
+    "inflammation",
+    "extracellular matrix",
+    "vascular permeability",
+    "phagocytosis",
+    "tissue remodeling",
+    "gut brain axis",
+    "endothelial dysfunction",
+    "homeostasis",
+    "cell adhesion",
+    "reactive oxygen species",
+    "neutrophil extracellular traps"
 ]

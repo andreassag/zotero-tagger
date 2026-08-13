@@ -8,9 +8,7 @@ import (
 
 func FormatTag(tag string, prefix string) string {
 	tag = strings.TrimSpace(tag)
-	if strings.HasPrefix(tag, prefix) {
-		tag = tag[len(prefix):]
-	}
+	tag = strings.TrimPrefix(tag, prefix)
 
 	tag = strings.ToLower(tag)
 	tag = strings.ReplaceAll(tag, " ", "-")

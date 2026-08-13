@@ -18,6 +18,7 @@ type Client struct {
 	rateLimiter *RateLimiter
 	retryConfig config.RetryConfig
 	logger      zerolog.Logger
+	cache       *DiskCache
 }
 
 func NewClient(cfg config.LLMConfig, logger zerolog.Logger) *Client {
@@ -37,6 +38,7 @@ func NewClient(cfg config.LLMConfig, logger zerolog.Logger) *Client {
 		rateLimiter: NewRateLimiter(cfg.RateLimits),
 		retryConfig: cfg.Retries,
 		logger:      logger,
+		cache:       NewDiskCache(),
 	}
 }
 
@@ -66,4 +68,25 @@ func (c *Client) CallSync(ctx context.Context, systemPrompt, userPrompt string) 
 	}
 
 	return resp.Choices[0].Message.Content, nil
+}
+
+func (c *Client) CallSyncWithCache(ctx context.Context, systemPrompt, userPrompt string, useCache bool) (string, error) {
+	hash := HashPrompt(c.model, systemPrompt, userPrompt)
+	if useCache && c.cache != nil {
+		if cached, ok := c.cache.Get(hash); ok {
+			c.logger.Info().Str("hash", hash[:8]).Msg("[CACHE HIT] Using cached LLM response")
+			return cached, nil
+		}
+	}
+
+	resp, err := c.CallSync(ctx, systemPrompt, userPrompt)
+	if err != nil {
+		return "", err
+	}
+
+	if useCache && c.cache != nil {
+		_ = c.cache.Set(hash, resp)
+	}
+
+	return resp, nil
 }

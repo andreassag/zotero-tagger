@@ -19,6 +19,8 @@ func ProcessText(rawText string, cfg config.ProcessingConfig, maxInputTokens int
 
 	text := StripCitations(rawText)
 	text = StripBibliography(text)
+	text = StripMaterialsAndMethods(text)
+	text = StripLegendsAndMetadata(text)
 	text = ExtractSections(text, cfg.SectionPriority, cfg.IntroParagraphs)
 	text = NormalizeWhitespace(text)
 
@@ -48,7 +50,7 @@ func StripCitations(text string) string {
 }
 
 func StripBibliography(text string) string {
-	bibRe := regexp.MustCompile(`(?mi)^\s*(references|bibliography|literature\s+cited|works\s+cited)\s*$`)
+	bibRe := regexp.MustCompile(`(?mi)^\s*(?:\d+[\.\)]\s*|\d+\s+)?(?:r\s*e\s*f\s*e\s*r\s*e\s*n\s*c\s*e\s*s|references|bibliography|literature\s+cited|works\s+cited)\b.*$`)
 	loc := bibRe.FindStringIndex(text)
 	if loc != nil {
 		return strings.TrimRight(text[:loc[0]], " \t\r\n") + "\n\n"
@@ -56,8 +58,46 @@ func StripBibliography(text string) string {
 	return text
 }
 
+func StripMaterialsAndMethods(text string) string {
+	methodsRe := regexp.MustCompile(`(?mi)^\s*(?:\d+[\.\)]\s*|\d+\s+)?(materials?\s+(?:and|&)\s+methods?|experimental\s+procedures?|methodology|methods?)\b.*$`)
+	nextSecRe := regexp.MustCompile(`(?mi)^\s*(?:\d+[\.\)]\s*|\d+\s+)?(results?(?:\s+and\s+discussion)?|discussion(?:\s+and\s+conclusions?)?|conclusions?|references|bibliography|acknowledg?ments?|funding|financial|declarations?|supplementary)\b.*$`)
+
+	loc := methodsRe.FindStringIndex(text)
+	if loc == nil {
+		return text
+	}
+
+	start := loc[0]
+	subText := text[loc[1]:]
+	nextLoc := nextSecRe.FindStringIndex(subText)
+	if nextLoc != nil {
+		end := loc[1] + nextLoc[0]
+		return text[:start] + "\n\n" + text[end:]
+	}
+
+	return strings.TrimRight(text[:start], " \t\r\n") + "\n\n"
+}
+
+func StripLegendsAndMetadata(text string) string {
+	lines := strings.Split(text, "\n")
+	var cleanLines []string
+
+	legendRe := regexp.MustCompile(`(?i)^\s*(?:fig(?:ure)?|table)\s*\d+[\.:]`)
+	metadataRe := regexp.MustCompile(`(?i)\b(?:downloaded from|copyright|author contributions|competing interests|financial support|funding|data availability)\b`)
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if legendRe.MatchString(trimmed) || metadataRe.MatchString(trimmed) {
+			continue
+		}
+		cleanLines = append(cleanLines, line)
+	}
+
+	return strings.Join(cleanLines, "\n")
+}
+
 func ExtractSections(text string, sectionPriority []string, introParagraphs int) string {
-	headerRe := regexp.MustCompile(`(?mi)^\s*(abstract|introduction|methods?|results?|discussion|conclusion)\s*$`)
+	headerRe := regexp.MustCompile(`(?mi)^\s*(?:[I|V|X\d]+[\.\)]\s*|\d+\s+)?(abstract|introduction|results?(?:\s+and\s+discussion)?|discussion(?:\s+and\s+conclusions?)?|conclusions?)\b.*$`)
 	locs := headerRe.FindAllStringSubmatchIndex(text, -1)
 
 	if len(locs) == 0 {
@@ -72,7 +112,16 @@ func ExtractSections(text string, sectionPriority []string, introParagraphs int)
 
 	var sections []section
 	for i, loc := range locs {
-		name := strings.ToLower(text[loc[2]:loc[3]])
+		rawName := strings.ToLower(text[loc[2]:loc[3]])
+		name := rawName
+		if strings.Contains(rawName, "abstract") {
+			name = "abstract"
+		} else if strings.Contains(rawName, "introduction") {
+			name = "introduction"
+		} else if strings.Contains(rawName, "conclusion") || strings.Contains(rawName, "discussion") {
+			name = "conclusion"
+		}
+
 		start := loc[0]
 		end := len(text)
 		if i+1 < len(locs) {
@@ -83,7 +132,9 @@ func ExtractSections(text string, sectionPriority []string, introParagraphs int)
 
 	secMap := make(map[string]string)
 	for _, sec := range sections {
-		secMap[sec.name] = text[sec.start:sec.end]
+		if _, ok := secMap[sec.name]; !ok {
+			secMap[sec.name] = text[sec.start:sec.end]
+		}
 	}
 
 	var sb strings.Builder
@@ -91,21 +142,14 @@ func ExtractSections(text string, sectionPriority []string, introParagraphs int)
 	for _, priority := range sectionPriority {
 		key := strings.ToLower(strings.TrimSpace(priority))
 
-		// "conclusion" falls back to "discussion" if not present
 		if key == "conclusion" {
 			if content, ok := secMap["conclusion"]; ok {
-				sb.WriteString(content)
-				sb.WriteString("\n\n")
-				continue
-			}
-			if content, ok := secMap["discussion"]; ok {
 				sb.WriteString(content)
 				sb.WriteString("\n\n")
 			}
 			continue
 		}
 
-		// "introduction" uses paragraph trimming
 		if key == "introduction" {
 			if intro, ok := secMap["introduction"]; ok {
 				paras := strings.Split(intro, "\n\n")

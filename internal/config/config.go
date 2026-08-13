@@ -65,7 +65,14 @@ type TaggingConfig struct {
 }
 
 func LoadConfig(configPath string) (*Config, error) {
-	_ = godotenv.Load(".env")
+	// Try loading .env from current or parent directories
+	envPaths := []string{".env", "../.env", "../../.env", "../../../.env"}
+	for _, p := range envPaths {
+		if _, err := os.Stat(p); err == nil {
+			_ = godotenv.Load(p)
+			break
+		}
+	}
 
 	v := viper.New()
 	v.SetConfigFile(configPath)

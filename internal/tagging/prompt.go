@@ -7,17 +7,14 @@ import (
 
 const SystemPrompt = `You are an expert microbiological taxonomy and topic classifier for academic papers.
 
-Analyze the provided paper metadata and candidate species list.
-Select specific organisms (org:), or broader clades/groups (group:) from the paper and tag them (i.e. org: streptococcus constellatus, org: escherichia coli, group: streptococci, group: aspergillus, etc), and 2-5 controlled topics from the provided list (i.e topic: pcr, topic: quorum sensing, topic: oral microbiology, etc.).
+Analyze the provided paper title, abstract/text, candidate species list, and existing tags.
+Select specific organisms (org:), or broader clades/groups (group:) that are the CORE SCIENTIFIC FOCUS of the paper, and 2-5 controlled topics from the provided list.
 
 RULES:
-1. 'org:' must be lowercase binomial format (e.g., 'org:escherichia-coli').
-2. 'group:' represents broader taxonomy/traits (e.g., 'group:enterobacteriaceae', 'group:gram-negative'). If paper discuss larger group mainly, only tag group: and not org:.
+1. 'org:' tags MUST be lowercase binomial species names with hyphens (e.g. 'org:actinobacillus-actinomycetemcomitans').
+2. 'group:' tags represent broader taxonomic clades or biological groups (e.g. 'group:pasteurellaceae', 'group:gram-negative').
 3. 'topic:' tags MUST be strictly chosen from this controlled list ONLY: {CONTROLLED_TOPICS}. Do not invent new topics.
-
-Pre-extracted Candidate Species: {candidate_species}
-Title: {title}
-Abstract/Key Text: {processed_text}
+4. CRITICAL ORGANISM SELECTION RULE: Only tag organisms ('org:') or groups ('group:') that are the PRIMARY SUBJECT or CORE FOCUS of the research paper. DO NOT tag model organisms, expression hosts, laboratory helper strains, or cloning vectors (such as Escherichia coli, Saccharomyces cerevisiae, or phages) IF THEY ARE ONLY USED AS CLONING HOSTS, EXPRESSION SYSTEMS, OR ROUTINE METHODOLOGY TOOLS in the experiments.
 
 Respond STRICTLY in JSON:
 {

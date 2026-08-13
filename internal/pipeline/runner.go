@@ -28,6 +28,8 @@ type Options struct {
 	Concurrent    int
 	Reprocess     bool
 	Verbose       bool
+	UseCache      bool
+	SkipLLM       bool
 }
 
 type Runner struct {
@@ -142,6 +144,11 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 	processed := processing.ProcessText(textToProcess, r.cfg.Processing, r.cfg.LLM.MaxInputTokens)
 	r.display.RenderTokenSavings(processed.OriginalWordCount, processed.ProcessedWordCount)
 
+	if opts.SkipLLM {
+		r.logger.Info().Str("itemKey", item.Key).Msg("[SKIP-LLM] Skipping LLM call and Zotero update")
+		return nil
+	}
+
 	existingTags := make([]string, len(item.Data.Tags))
 	for i, t := range item.Data.Tags {
 		existingTags[i] = t.Tag
@@ -150,7 +157,7 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 	sysPrompt := tagging.BuildSystemPrompt(r.cfg.Tagging.ControlledTopics.Topics)
 	usrPrompt := tagging.BuildUserPrompt(item.Data.Title, processed.Text, processed.CandidateSpecies, existingTags)
 
-	llmRawResp, err := r.llmClient.CallSync(ctx, sysPrompt, usrPrompt)
+	llmRawResp, err := r.llmClient.CallSyncWithCache(ctx, sysPrompt, usrPrompt, opts.UseCache)
 	if err != nil {
 		return fmt.Errorf("LLM API call failed: %w", err)
 	}
