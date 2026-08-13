@@ -1,8 +1,10 @@
 services:
   zotero-tagger:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
+    image: ghcr.io/exterex/zotero-tagger:latest
+    # To build locally instead of using the pre-built GHCR image, uncomment below:
+    # build:
+    #   context: ..
+    #   dockerfile: docker/Dockerfile
     env_file:
       - ../.env
     volumes:

@@ -12,12 +12,14 @@ import (
 )
 
 var (
-	opts pipeline.Options
+	version = "dev"
+	opts    pipeline.Options
 )
 
 var rootCmd = &cobra.Command{
-	Use:   "zotero-tagger",
-	Short: "Automatically tag academic papers in Zotero libraries using LLM taxonomy extraction",
+	Use:     "zotero-tagger",
+	Version: version,
+	Short:   "Automatically tag academic papers in Zotero libraries using LLM taxonomy extraction",
 }
 
 var tagCmd = &cobra.Command{

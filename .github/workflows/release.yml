@@ -1,0 +1,101 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+      - 'v*.*'
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  build-and-release:
+    name: Build Multi-Platform Release
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goos: linux
+            goarch: amd64
+            archive_ext: tar.gz
+          - goos: linux
+            goarch: arm64
+            archive_ext: tar.gz
+          - goos: darwin
+            goarch: amd64
+            archive_ext: tar.gz
+          - goos: darwin
+            goarch: arm64
+            archive_ext: tar.gz
+          - goos: windows
+            goarch: amd64
+            archive_ext: zip
+            exe: .exe
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: 'go.mod'
+
+      - name: Build binary
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 0
+        run: |
+          BINARY_NAME="zotero-tagger${{ matrix.exe }}"
+          VERSION="${{ github.ref_name }}"
+          go build -ldflags="-s -w -X main.version=${VERSION}" -o "${BINARY_NAME}" ./cmd/zotero-tagger
+
+      - name: Package archive (${{ matrix.archive_ext }})
+        run: |
+          VERSION="${{ github.ref_name }}"
+          ARCHIVE_NAME="zotero-tagger_${VERSION}_${{ matrix.goos }}_${{ matrix.goarch }}"
+          mkdir -p dist
+          if [ "${{ matrix.archive_ext }}" = "zip" ]; then
+            zip "dist/${ARCHIVE_NAME}.zip" "zotero-tagger${{ matrix.exe }}" README.md LICENSE config/config.toml
+          else
+            tar -czvf "dist/${ARCHIVE_NAME}.tar.gz" "zotero-tagger${{ matrix.exe }}" README.md LICENSE config/config.toml
+          fi
+
+      - name: Upload release artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.goos }}-${{ matrix.goarch }}
+          path: dist/*
+          retention-days: 1
+
+  publish-release:
+    name: Publish GitHub Release
+    needs: build-and-release
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: binaries-*
+          path: release_assets
+          merge-multiple: true
+
+      - name: Generate SHA256 Checksums
+        working-directory: release_assets
+        run: |
+          sha256sum * > checksums.txt
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release_assets/*
+          generate_release_notes: true
+          draft: false
+          prerelease: false
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

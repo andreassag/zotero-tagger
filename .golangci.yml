@@ -1,0 +1,22 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - errcheck
+    - gosimple
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - gofmt
+    - gosec
+
+linters-settings:
+  govet:
+    enable-all: false
+    shadow: true
+  gosec:
+    excludes:
+      - G104 # Audit errors not checked (standard in some utility functions)
