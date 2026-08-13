@@ -26,4 +26,3 @@ tmp/
 
 # Go build cache & vendor
 /vendor/
-!cmd/zotero-tagger/main.go
