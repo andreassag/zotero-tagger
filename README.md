@@ -1,40 +1,69 @@
 # Zotero AI Tagger
 
-A high-performance, modular Go CLI application that automatically fetches academic papers from a Zotero library, extracts metadata and PDF full text, optimizes text to minimize LLM token usage (70–80% reduction), extracts taxonomy and controlled microbiological tags via SiliconFlow (OpenAI-compatible API), and updates Zotero items.
+[![Go Version](https://img.shields.io/badge/Go-1.23+-00ADD8?style=flat&logo=go)](https://golang.org)
+[![OpenAI Compatible](https://img.shields.io/badge/LLM-OpenAI--Compatible-412991?style=flat&logo=openai)](https://platform.openai.com)
+[![Docker Ready](https://img.shields.io/badge/Docker-Containerized-2496ED?style=flat&logo=docker)](docker/Dockerfile)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
+
+An automated, high-performance CLI tool that categorizes and tags academic literature in **Zotero** libraries using large language models.
+
+By integrating PDF full-text extraction, rule-based text reduction heuristics (70–80% token savings), zero-token local biological entity pre-extraction, and OpenAI-compatible LLM endpoints, `zotero-tagger` delivers standardized, hierarchical, and controlled taxonomy tags back into your Zotero database with full idempotency and concurrency.
 
 ---
 
-## Features
+## Key Features
 
-- **Zotero REST API Integration**: Direct client with automatic pagination, rate-limit retry (`Retry-After`), and version optimistic locking.
-- **PDF Extraction**: Uses `pdftotext` (poppler-utils) with fallback to item abstract note if no PDF attachment exists.
+- **Direct Zotero REST API Sync**: Seamlessly processes user libraries or shared group libraries with automatic pagination, exponential backoff, and HTTP 412 optimistic locking prevention.
+- **Intelligent Full-Text Extraction**: Automatically downloads and parses attached PDF files using `pdftotext` (poppler-utils), with graceful fallback to item abstract notes.
 - **70–80% Token Optimization**:
-  - Parenthetical and bracketed citation stripping.
-  - Bibliography/References section truncation.
-  - IMRAD section priority filtering (Abstract > Conclusion > Introduction).
-  - Whitespace normalization and configurable token budget truncation.
-- **Zero-Token Local Species Pre-Extraction**:
-  - Regex pre-extraction for Latin binomials (`Escherichia coli`), genus mentions (`Streptococcus sp.`), and taxonomic suffixes (`-aceae`, `-cocci`, etc.).
-  - Deduplicated candidate species passed as context hints to the LLM.
-- **Strict Taxonomy Namespacing**:
-  - `org:` — binomial species format (e.g., `org:escherichia-coli`).
-  - `group:` — broader taxonomic clades or traits (e.g., `group:enterobacteriaceae`).
-  - `topic:` — enforced strictly from a configurable `CONTROLLED_TOPICS` list.
-- **Idempotency & Safety**:
-  - Sentinel tag (`_ai-tagged`) prevents duplicate processing.
-  - `--dry-run` flag to preview tags in beautiful terminal tables without modifying Zotero.
-  - Configurable RPM, TPM, RPD rate limiting.
-- **Container Ready**: Alpine multi-stage Docker build producing a static binary container (~25MB).
+  - Strips parenthetical and bracketed academic citations.
+  - Truncates bibliographies, reference lists, and appendix sections.
+  - Prioritizes core scientific sections according to IMRAD hierarchy (Abstract &rarr; Conclusion &rarr; Introduction).
+  - Enforces configurable token budgets to maximize LLM cost efficiency.
+- **Zero-Token Local Entity Pre-Extraction**:
+  - Scans raw text with optimized regular expressions for binomial nomenclature (e.g., *Escherichia coli*), genus notations (*Streptococcus sp.*), and taxonomic suffixes (*-aceae*, *-ales*, *-cocci*).
+  - Feeds pre-extracted candidate entities as context hints to the LLM without additional token overhead.
+- **Strict, Multi-Tiered Taxonomy Namespacing**:
+  - `org:` &mdash; Standardized lowercase binomial species names (e.g., `org:streptococcus-mutans`). Excludes lab-tool cloning hosts and expression vectors unless they are the primary subject of research.
+  - `group:` &mdash; Higher-level taxonomic clades, families, or phenotypic traits (e.g., `group:streptococcaceae`, `group:gram-negative`).
+  - `topic:` &mdash; Controlled subject terms validated strictly against a user-defined vocabulary list to prevent taxonomy drift and hallucinated keywords.
+- **Universal OpenAI-Compatible LLM Integration**: Connects to any OpenAI-compatible API endpoint (OpenAI, local Ollama, vLLM, LiteLLM, OpenRouter, or self-hosted inference servers).
+- **Safety, Concurrency & Idempotency**:
+  - Sentinel tagging (`_ai-tagged`) prevents duplicate processing on subsequent runs.
+  - `--dry-run` mode provides rich terminal table previews without mutating your Zotero library.
+  - Built-in multi-worker concurrency and token-aware rate limiting (RPM, TPM, RPD).
+  - Local disk cache (`--cache`) to eliminate redundant LLM API calls during testing.
+- **Container Ready**: Includes a multi-stage Docker build and Docker Compose configuration.
+
+---
+
+## Workflow Architecture
+
+```mermaid
+flowchart LR
+    A[Zotero Library] -->|Fetch Unprocessed Items| B[PDF / Abstract Extractor]
+    B --> C[Text Preprocessor & Token Reducer]
+    C -->|Regex Pre-Extraction| D[Local Species Heuristics]
+    C & D --> E[OpenAI-Compatible LLM API]
+    E --> F[JSON Schema & Taxonomy Validator]
+    F -->|Controlled Topic Filter| G[Tag Builder]
+    G -->|Optimistic Lock Update| A
+```
 
 ---
 
 ## Installation & Setup
 
 ### Prerequisites
-- Go 1.23+
-- `poppler-utils` (for local PDF text extraction via `pdftotext`)
 
-### Build Locally
+- **Go 1.23+** (if building from source)
+- **`poppler-utils`** (required for `pdftotext` PDF extraction):
+  - **Debian / Ubuntu**: `sudo apt install poppler-utils`
+  - **macOS** (Homebrew): `brew install poppler`
+  - **Arch Linux**: `sudo pacman -S poppler`
+  - **Alpine Linux**: `apk add poppler-utils`
+
+### 1. Clone & Build
 
 ```bash
 git clone https://github.com/exterex/zotero-tagger.git
@@ -42,29 +71,54 @@ cd zotero-tagger
 go build -o zotero-tagger ./cmd/zotero-tagger
 ```
 
-### Configuration
+### 2. Configure Environment Variables
 
-1. Copy `.env.example` to `.env` and fill in credentials:
-```env
-ZOTERO_USER_ID=your_user_id
-ZOTERO_API_KEY=your_api_key
-LLM_API_KEY=your_siliconflow_api_key
+Copy the example environment template:
+
+```bash
+cp .env.example .env
 ```
 
-2. Edit `config/config.toml` to customize allowed item types, token limits, rate limits, and controlled topics:
+Edit `.env` with your API credentials:
+
+```env
+# Zotero API credentials
+# Obtain your User ID and generate an API key at https://www.zotero.org/settings/keys
+ZOTERO_USER_ID=12345678
+ZOTERO_API_KEY=your_zotero_api_key
+
+# LLM API credentials (OpenAI or any OpenAI-compatible provider)
+LLM_API_KEY=your_llm_api_key
+```
+
+### 3. Customize `config/config.toml`
+
+Adjust the configuration file to match your LLM endpoint, model, rate limits, and controlled topics:
+
 ```toml
 [llm]
-model_name = "Qwen/Qwen3-8B"
-base_url = "https://api.siliconflow.cn/v1"
+model_name = "gpt-4o-mini"
+base_url = "https://api.openai.com/v1"
 temperature = 0.0
 max_input_tokens = 10000
+
+[llm.rate_limits]
+requests_per_minute = 60
+tokens_per_minute = 50000
+requests_per_day = 10000
+
+[zotero]
+library_type = "user" # "user" or "group"
 
 [tagging.controlled_topics]
 topics = [
     "oral microbiology",
     "biofilm",
     "quorum sensing",
-    "PCR"
+    "antimicrobial resistance",
+    "genomics",
+    "metagenomics",
+    "microbiome"
 ]
 ```
 
@@ -72,27 +126,114 @@ topics = [
 
 ## Usage
 
-### Run Tagging Pipeline
+### Command-Line Reference
 
 ```bash
-# Preview tagging for 5 items without modifying Zotero
+zotero-tagger tag [flags]
+```
+
+| Flag | Type | Default | Description |
+| :--- | :--- | :--- | :--- |
+| `--config` | `string` | `config/config.toml` | Path to TOML configuration file |
+| `--dry-run` | `bool` | `false` | Preview generated tags without modifying Zotero items |
+| `--limit` | `int` | `0` | Maximum number of items to process (`0` = all untagged) |
+| `--collection` | `string` | `""` | Filter processing to a specific Zotero collection key |
+| `--group` | `string` | `""` | Process a specific Zotero Group Library ID |
+| `--item` | `string` | `""` | Process a single specific Zotero item key |
+| `--concurrent` | `int` | `1` | Number of parallel worker threads |
+| `--reprocess` | `bool` | `false` | Reprocess items even if the sentinel tag (`_ai-tagged`) exists |
+| `--cache` | `bool` | `false` | Cache LLM prompt responses on disk to prevent redundant API calls |
+| `--skip-llm` | `bool` | `false` | Run text extraction and reduction without invoking LLM or writing tags |
+| `--verbose` | `bool` | `false` | Enable detailed debug logging |
+
+---
+
+### Examples
+
+#### 1. Dry Run / Preview
+
+Run a dry run on 5 items to preview generated tags and token reduction metrics in the terminal:
+
+```bash
 ./zotero-tagger tag --dry-run --limit 5
+```
 
-# Process a specific item by key
-./zotero-tagger tag --item ITEM_KEY --dry-run
+#### 2. Process a Specific Item
 
-# Run against a specific collection with 3 concurrent workers
-./zotero-tagger tag --collection COLLECTION_KEY --concurrent 3
+Tag a single library item by its Zotero key:
 
-# Force reprocessing of already tagged items
+```bash
+./zotero-tagger tag --item ITEM_KEY
+```
+
+#### 3. Process a Collection with Concurrency
+
+Process items within a specific collection using 4 concurrent workers:
+
+```bash
+./zotero-tagger tag --collection COLLECTION_KEY --concurrent 4
+```
+
+#### 4. Process a Shared Group Library
+
+Process papers in a shared Zotero group library:
+
+```bash
+./zotero-tagger tag --group GROUP_ID
+```
+
+#### 5. Force Reprocessing of Previously Tagged Items
+
+Refresh tags across all papers, bypassing the sentinel tag:
+
+```bash
 ./zotero-tagger tag --reprocess
+```
+
+#### 6. Development & Inspection Mode
+
+Test text reduction heuristics and inspect candidate species without calling the LLM API:
+
+```bash
+./zotero-tagger tag --skip-llm --limit 3 --verbose
 ```
 
 ---
 
 ## Running with Docker
 
+`zotero-tagger` provides a lightweight Alpine container image with `poppler-utils` pre-installed.
+
+### Using Docker Compose
+
+1. Configure your `.env` and `config/config.toml` files.
+2. Launch the containerized pipeline:
+
 ```bash
-# Build and run containerized tagger
 docker compose -f docker/docker-compose.yml up --build
 ```
+
+### Using Docker CLI
+
+```bash
+# Build the image
+docker build -t zotero-tagger -f docker/Dockerfile .
+
+# Run dry run with local configuration mounted
+docker run --rm \
+  --env-file .env \
+  -v $(pwd)/config/config.toml:/etc/zotero-tagger/config.toml:ro \
+  zotero-tagger tag --dry-run --limit 5
+```
+
+---
+
+## Detailed Documentation
+
+For full architectural specifications, taxonomy schemas, local model configuration (Ollama/vLLM), and troubleshooting guides, see the [Detailed Documentation Guide](docs/README.md).
+
+---
+
+## License
+
+This project is licensed under the [MIT License](LICENSE).
