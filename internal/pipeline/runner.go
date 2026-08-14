@@ -124,7 +124,7 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 	var textToProcess string
 	pdfPath, err := r.zoteroClient.DownloadPDF(ctx, item.Key, opts.GroupID)
 	if err == nil && pdfPath != "" {
-		defer os.Remove(pdfPath)
+		defer func() { _ = os.Remove(pdfPath) }()
 		extractedText, pdfErr := processing.ExtractTextFromPDF(pdfPath)
 		if pdfErr == nil && strings.TrimSpace(extractedText) != "" {
 			textToProcess = extractedText

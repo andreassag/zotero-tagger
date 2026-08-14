@@ -33,13 +33,13 @@ func getStateFilePath() string {
 		return ".zotero-tagger-state.json"
 	}
 	dir := filepath.Join(configDir, "zotero-tagger")
-	_ = os.MkdirAll(dir, 0755)
+	_ = os.MkdirAll(dir, 0750)
 	return filepath.Join(dir, "state.json")
 }
 
 func loadPersistedState() PersistedState {
 	path := getStateFilePath()
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return PersistedState{DailyCount: 0, DailyReset: time.Now().Add(24 * time.Hour)}
 	}
@@ -54,7 +54,7 @@ func savePersistedState(state PersistedState) {
 	path := getStateFilePath()
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err == nil {
-		_ = os.WriteFile(path, data, 0644)
+		_ = os.WriteFile(filepath.Clean(path), data, 0600)
 	}
 }
 

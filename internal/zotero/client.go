@@ -70,7 +70,7 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 			// Drain and close body on error if present (redirect errors)
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
-				resp.Body.Close()
+				_ = resp.Body.Close()
 			}
 			continue
 		}
@@ -82,13 +82,13 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 					retryAfterSec = parsed
 				}
 			}
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			time.Sleep(time.Duration(retryAfterSec) * time.Second)
 			continue
 		}
 
 		if resp.StatusCode >= 500 {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			continue
 		}
 
@@ -112,7 +112,7 @@ func (c *Client) FetchItems(ctx context.Context, opts FetchOptions) ([]Item, err
 		if err != nil {
 			return nil, err
 		}
-		defer resp.Body.Close()
+		defer func() { _ = resp.Body.Close() }()
 
 		if resp.StatusCode != http.StatusOK {
 			return nil, fmt.Errorf("failed to fetch item %s: status %d", opts.ItemKey, resp.StatusCode)
@@ -161,16 +161,16 @@ func (c *Client) FetchItems(ctx context.Context, opts FetchOptions) ([]Item, err
 		}
 
 		if resp.StatusCode != http.StatusOK {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, fmt.Errorf("failed to fetch items: status %d", resp.StatusCode)
 		}
 
 		var items []Item
 		if err := json.NewDecoder(resp.Body).Decode(&items); err != nil {
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			return nil, err
 		}
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		allowedMap := make(map[string]bool)
 		for _, t := range opts.ItemTypes {
@@ -209,7 +209,7 @@ func (c *Client) DownloadPDF(ctx context.Context, itemKey string, groupID string
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 
 	if resp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to fetch children for item %s: status %d", itemKey, resp.StatusCode)
@@ -242,7 +242,7 @@ func (c *Client) DownloadPDF(ctx context.Context, itemKey string, groupID string
 	if err != nil {
 		return "", err
 	}
-	defer fileResp.Body.Close()
+	defer func() { _ = fileResp.Body.Close() }()
 
 	if fileResp.StatusCode != http.StatusOK {
 		return "", fmt.Errorf("failed to download PDF file for attachment %s: status %d", pdfAttachmentKey, fileResp.StatusCode)
@@ -252,10 +252,10 @@ func (c *Client) DownloadPDF(ctx context.Context, itemKey string, groupID string
 	if err != nil {
 		return "", fmt.Errorf("failed to create temp file: %w", err)
 	}
-	defer tmpFile.Close()
+	defer func() { _ = tmpFile.Close() }()
 
 	if _, err := io.Copy(tmpFile, fileResp.Body); err != nil {
-		os.Remove(tmpFile.Name())
+		_ = os.Remove(tmpFile.Name())
 		return "", fmt.Errorf("failed to save PDF content: %w", err)
 	}
 
@@ -305,7 +305,7 @@ func (c *Client) UpdateTags(ctx context.Context, itemKey string, version int, ta
 			continue
 		}
 		_, _ = io.Copy(io.Discard, resp.Body)
-		resp.Body.Close()
+		_ = resp.Body.Close()
 
 		if resp.StatusCode == http.StatusPreconditionFailed {
 			return fmt.Errorf("%w for item %s", ErrPreconditionFailed, itemKey)

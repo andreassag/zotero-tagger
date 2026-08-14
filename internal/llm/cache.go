@@ -26,7 +26,7 @@ func NewDiskCache() *DiskCache {
 	} else {
 		cacheDir = filepath.Join(userCache, "zotero-tagger", "llm")
 	}
-	_ = os.MkdirAll(cacheDir, 0755)
+	_ = os.MkdirAll(cacheDir, 0750)
 
 	return &DiskCache{
 		cacheDir: cacheDir,
@@ -47,8 +47,8 @@ func (c *DiskCache) Get(promptHash string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	filePath := filepath.Join(c.cacheDir, promptHash+".json")
-	data, err := os.ReadFile(filePath)
+	filePath := filepath.Join(c.cacheDir, filepath.Clean(promptHash)+".json")
+	data, err := os.ReadFile(filepath.Clean(filePath))
 	if err != nil {
 		return "", false
 	}
@@ -71,6 +71,6 @@ func (c *DiskCache) Set(promptHash string, response string) error {
 		return err
 	}
 
-	filePath := filepath.Join(c.cacheDir, promptHash+".json")
-	return os.WriteFile(filePath, data, 0644)
+	filePath := filepath.Join(c.cacheDir, filepath.Clean(promptHash)+".json")
+	return os.WriteFile(filePath, data, 0600)
 }

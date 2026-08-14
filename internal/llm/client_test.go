@@ -48,7 +48,7 @@ func TestCallSync_Success(t *testing.T) {
 			},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -66,7 +66,7 @@ func TestCallSync_EmptyChoices(t *testing.T) {
 			"choices": []interface{}{},
 		}
 		w.Header().Set("Content-Type", "application/json")
-		json.NewEncoder(w).Encode(resp)
+		_ = json.NewEncoder(w).Encode(resp)
 	}))
 	defer server.Close()
 
@@ -81,7 +81,7 @@ func TestCallSync_EmptyChoices(t *testing.T) {
 func TestRateLimiter_DailyLimit(t *testing.T) {
 	statePath := getStateFilePath()
 	_ = os.Remove(statePath)
-	defer os.Remove(statePath)
+	defer func() { _ = os.Remove(statePath) }()
 
 	cfg := config.RateLimitConfig{
 		RequestsPerMinute: 0,
