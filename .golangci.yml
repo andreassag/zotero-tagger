@@ -12,16 +12,14 @@ linters:
     - staticcheck
     - unused
     - gosec
-
-linters-settings:
-  govet:
-    enable:
-      - shadow
-  gosec:
-    excludes:
-      - G104
+  settings:
+    govet:
+      enable:
+        - shadow
+    gosec:
+      excludes:
+        - G104
 
 formatters:
   enable:
     - gofmt
-

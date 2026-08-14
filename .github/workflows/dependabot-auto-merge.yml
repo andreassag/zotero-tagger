@@ -11,6 +11,7 @@ on:
 permissions:
   contents: write
   pull-requests: write
+  checks: read
 
 jobs:
   auto-merge:
@@ -23,9 +24,48 @@ jobs:
         with:
           github-token: "${{ secrets.GITHUB_TOKEN }}"
 
-      - name: Enable auto-merge for Dependabot PRs
-        run: gh pr merge --auto --squash "$PR_URL"
+      - name: Wait for PR status checks to pass
+        env:
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: ${{ github.repository }}
+        run: |
+          echo "Waiting for CI checks to complete on commit ${HEAD_SHA}..."
+          TIMEOUT=900
+          INTERVAL=10
+          ELAPSED=0
+
+          while [ $ELAPSED -lt $TIMEOUT ]; do
+            TOTAL=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --jq '[.check_runs[] | select(.name != "auto-merge" and .name != "Dependabot Auto Merge")] | length')
+            PENDING=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --jq '[.check_runs[] | select(.name != "auto-merge" and .name != "Dependabot Auto Merge" and .status != "completed")] | length')
+            FAILED=$(gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --jq '[.check_runs[] | select(.name != "auto-merge" and .name != "Dependabot Auto Merge" and .status == "completed" and (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral"))] | length')
+
+            echo "Status: ${TOTAL} check(s) found (${PENDING} pending, ${FAILED} failed)."
+
+            if [ "$TOTAL" -gt 0 ] && [ "$FAILED" -gt 0 ]; then
+              echo "Error: One or more checks failed:"
+              gh api "repos/${REPO}/commits/${HEAD_SHA}/check-runs" --jq '.check_runs[] | select(.name != "auto-merge" and .name != "Dependabot Auto Merge" and .status == "completed" and (.conclusion != "success" and .conclusion != "skipped" and .conclusion != "neutral")) | "- \(.name): \(.conclusion)"'
+              exit 1
+            fi
+
+            if [ "$TOTAL" -gt 0 ] && [ "$PENDING" -eq 0 ]; then
+              echo "All CI checks completed successfully!"
+              break
+            fi
+
+            sleep $INTERVAL
+            ELAPSED=$((ELAPSED + INTERVAL))
+          done
+
+          if [ $ELAPSED -ge $TIMEOUT ]; then
+            echo "Error: Timed out waiting for CI checks to finish."
+            exit 1
+          fi
+
+      - name: Merge Dependabot PR
+        run: gh pr merge --squash "$PR_URL"
         env:
           PR_URL: ${{ github.event.pull_request.html_url }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
 

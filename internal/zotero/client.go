@@ -216,8 +216,8 @@ func (c *Client) DownloadPDF(ctx context.Context, itemKey string, groupID string
 	}
 
 	var children []Item
-	if err := json.NewDecoder(resp.Body).Decode(&children); err != nil {
-		return "", err
+	if decErr := json.NewDecoder(resp.Body).Decode(&children); decErr != nil {
+		return "", decErr
 	}
 
 	var pdfAttachmentKey string
