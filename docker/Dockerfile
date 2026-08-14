@@ -13,7 +13,7 @@ COPY . .
 RUN CGO_ENABLED=0 GOOS=${TARGETOS:-linux} GOARCH=${TARGETARCH:-amd64} go build -ldflags="-s -w" -o /zotero-tagger ./cmd/zotero-tagger
 
 # Runtime stage
-FROM alpine:3.20
+FROM alpine:3.24
 
 RUN apk add --no-cache poppler-utils ca-certificates
 
