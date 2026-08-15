@@ -1,4 +1,4 @@
-module github.com/exterex/zotero-tagger
+module github.com/andreassag/zotero-tagger
 
 go 1.26.5
 
