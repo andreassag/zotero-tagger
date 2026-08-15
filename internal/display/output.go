@@ -6,7 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/lipgloss/table"
-	"github.com/exterex/zotero-tagger/internal/zotero"
+	"github.com/andreassag/zotero-tagger/internal/zotero"
 )
 
 var (

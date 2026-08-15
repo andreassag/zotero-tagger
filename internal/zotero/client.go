@@ -13,7 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 )
 
 // ErrPreconditionFailed is returned when a Zotero item was modified externally (HTTP 412).

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/rs/zerolog"

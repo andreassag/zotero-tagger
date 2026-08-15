@@ -405,7 +405,7 @@ topics = [
 ]
 ```
 
-3. If desired, adjust the system prompt description in [prompt.go](file:///home/exterex/repo/zotero-tagger/internal/tagging/prompt.go) to match your domain's taxonomy conventions.
+3. If desired, adjust the system prompt description in [prompt.go](file:///home/andreassag/repo/zotero-tagger/internal/tagging/prompt.go) to match your domain's taxonomy conventions.
 
 ---
 
@@ -519,7 +519,7 @@ Executes the synchronization pipeline.
 
 ### Dockerfile
 
-The multi-stage [Dockerfile](file:///home/exterex/repo/zotero-tagger/docker/Dockerfile) compiles a static Go binary on Alpine Linux and packages it with `poppler-utils` and `ca-certificates` in an ultra-compact ~25MB image.
+The multi-stage [Dockerfile](file:///home/andreassag/repo/zotero-tagger/docker/Dockerfile) compiles a static Go binary on Alpine Linux and packages it with `poppler-utils` and `ca-certificates` in an ultra-compact ~25MB image.
 
 ### Running with Docker Compose
 

@@ -8,12 +8,12 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/exterex/zotero-tagger/internal/config"
-	"github.com/exterex/zotero-tagger/internal/display"
-	"github.com/exterex/zotero-tagger/internal/llm"
-	"github.com/exterex/zotero-tagger/internal/processing"
-	"github.com/exterex/zotero-tagger/internal/tagging"
-	"github.com/exterex/zotero-tagger/internal/zotero"
+	"github.com/andreassag/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/display"
+	"github.com/andreassag/zotero-tagger/internal/llm"
+	"github.com/andreassag/zotero-tagger/internal/processing"
+	"github.com/andreassag/zotero-tagger/internal/tagging"
+	"github.com/andreassag/zotero-tagger/internal/zotero"
 	"github.com/rs/zerolog"
 )
 

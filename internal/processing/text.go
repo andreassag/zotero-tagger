@@ -4,7 +4,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 )
 
 type ProcessedText struct {

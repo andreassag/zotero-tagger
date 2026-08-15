@@ -3,7 +3,7 @@ package tagging
 import (
 	"strings"
 
-	"github.com/exterex/zotero-tagger/internal/zotero"
+	"github.com/andreassag/zotero-tagger/internal/zotero"
 )
 
 func FormatTag(tag string, prefix string) string {

@@ -66,7 +66,7 @@ flowchart LR
 ### 1. Clone & Build
 
 ```bash
-git clone https://github.com/exterex/zotero-tagger.git
+git clone https://github.com/andreassag/zotero-tagger.git
 cd zotero-tagger
 go build -o zotero-tagger ./cmd/zotero-tagger
 ```
