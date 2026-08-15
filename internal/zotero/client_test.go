@@ -7,7 +7,7 @@ import (
 	"net/http/httptest"
 	"testing"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 	"github.com/stretchr/testify/assert"
 )
 

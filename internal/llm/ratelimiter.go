@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 	"golang.org/x/time/rate"
 )
 

@@ -1,6 +1,6 @@
 services:
   zotero-tagger:
-    image: ghcr.io/exterex/zotero-tagger:latest
+    image: ghcr.io/andreassag/zotero-tagger:latest
     # To build locally instead of using the pre-built GHCR image, uncomment below:
     # build:
     #   context: ..

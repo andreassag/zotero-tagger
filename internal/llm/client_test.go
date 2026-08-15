@@ -8,7 +8,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/exterex/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/config"
 	"github.com/rs/zerolog"
 	"github.com/stretchr/testify/assert"
 )

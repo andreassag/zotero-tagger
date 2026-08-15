@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/exterex/zotero-tagger/internal/config"
-	"github.com/exterex/zotero-tagger/internal/pipeline"
+	"github.com/andreassag/zotero-tagger/internal/config"
+	"github.com/andreassag/zotero-tagger/internal/pipeline"
 	"github.com/rs/zerolog"
 	"github.com/spf13/cobra"
 )
