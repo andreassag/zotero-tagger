@@ -36,7 +36,8 @@ sequenceDiagram
     participant CLI as Tagger CLI / Runner
     participant Zotero as Zotero API
     participant Google as Google GenAI Files API
-    participant LLM as Google Gemini LLM
+    participant Extract as gemini-3.5-flash-lite ([llm.extract])
+    participant Decisions as gemini-decision-1 ([llm.decisions])
 
     CLI->>Zotero: Fetch untagged items (exclude sentinel tag)
     Zotero-->>CLI: Return items list (paginated)
@@ -44,15 +45,26 @@ sequenceDiagram
         CLI->>Zotero: Download PDF attachment
         alt PDF Available
             Zotero-->>CLI: Return PDF stream
-            CLI->>Google: Upload PDF via Files API
+            CLI->>Google: Upload PDF once via Files API (on cache miss)
             Google-->>CLI: Return File Resource (URI)
-            CLI->>LLM: Dispatch multimodal prompt with PDF file part
-            CLI->>Google: Delete uploaded PDF (cleanup)
+            par Concurrent Model Evaluation
+                CLI->>Extract: Extract org: and group: tags (file URI)
+                Extract-->>CLI: Return JSON (org_tags, group_tags)
+            and
+                CLI->>Decisions: Evaluate controlled topics ('noul') via POST /v1beta/decisions (document URI)
+                Decisions-->>CLI: Return calibrated P(yes) (noul) + confidence per topic
+            end
+            CLI->>Google: Delete uploaded PDF once after both finish
         else No PDF Available
-            CLI->>LLM: Fallback to Item Abstract Note as text prompt
+            par Concurrent Model Evaluation
+                CLI->>Extract: Extract org: and group: tags from Abstract Note
+                Extract-->>CLI: Return JSON (org_tags, group_tags)
+            and
+                CLI->>Decisions: Evaluate controlled topics ('noul') via POST /v1beta/decisions (text)
+                Decisions-->>CLI: Return calibrated P(yes) (noul) + confidence per topic
+            end
         end
-        LLM-->>CLI: Return JSON taxonomy payload
-        CLI->>CLI: Validate JSON & enforce controlled topics
+        CLI->>CLI: Filter topics by thresholds & cap at max_topics
         alt Not Dry-Run
             CLI->>Zotero: Patch item tags (with version lock & sentinel tag)
             Zotero-->>CLI: 204 Success / 412 Concurrency Skip
@@ -66,9 +78,9 @@ sequenceDiagram
 
 1. **Item Discovery**: Queries user or group library for items matching allowed types (`journalArticle`, `conferencePaper`, `preprint`, `thesis`, `book`, etc.) that do not have the sentinel tag (`_ai-tagged`).
 2. **Document Acquisition**: Downloads the attached PDF file from Zotero. If no PDF exists, falls back to the Zotero abstract field. Items with neither PDF nor abstract are gracefully skipped.
-3. **Google GenAI File Upload**: Uploads the PDF directly to Google via the Google GenAI Files API (`client.Files.UploadFromPath`) for native multimodal understanding, then guarantees deletion after inference.
-4. **Pure Multimodal LLM Extraction**: Prompts the Gemini model (`gemini-3.5-flash-lite`) with structured taxonomy instructions to identify organisms, clades, and topic tags directly from the full document. Supports optional disk caching for zero-token re-runs.
-5. **Schema Validation & Topic Filtering**: Validates JSON response structure, normalizes namespace formatting, and discards any topic not present in the configured controlled vocabulary.
+3. **Shared PDF Upload & Concurrent Extraction (`[llm.extract]`)**: When a PDF is present and either model misses the disk cache, uploads the PDF once via the Google GenAI Files API (`client.Files.UploadFromPath`) and shares its `file.URI` across concurrent requests. `gemini-3.5-flash-lite` extracts `org:` and `group:` tags via `GenerateContent`, and the uploaded file is deleted once both model calls complete.
+4. **Calibrated Topic Decisions (`[llm.decisions]`)**: Concurrently sends a single `POST /v1beta/decisions` request to `gemini-decision-1` (referencing the shared Files API `document.uri` or abstract text) with an independent `noul` (yes/no) question for each controlled topic, returning calibrated probabilities and confidence scores with 0 output tokens. Both calls support disk caching (`--cache`), `[llm.retries]` backoff/retries, and atomic failure handling.
+5. **Threshold Filtering & Top-N Selection**: Topics meeting `probability_threshold` and `confidence_threshold` are sorted by descending `noul` probability and capped at `max_topics`.
 6. **Optimistic Version Lock & Sentinel Sync**: Appends formatted tags plus the sentinel tag (`_ai-tagged`) to the item in Zotero using HTTP optimistic locking (`If-Unmodified-Since-Version`).
 
 ---
@@ -78,21 +90,38 @@ sequenceDiagram
 The application configuration is managed via TOML. By default, the application looks for `config/config.toml` or the path specified by the `--config` flag.
 
 ```toml
-[llm]
-# Model identifier to specify in the API request
+[llm.extract]
+# Model identifier for open-ended organism (org:) and clade (group:) extraction
 model_name = "gemini-3.5-flash-lite"
 
 # Sampling temperature (0.0 recommended for deterministic, structured output)
 temperature = 0.0
 
-[llm.rate_limits]
-# Rate limiting controls
-requests_per_minute = 1000
-tokens_per_minute = 1000000
+[llm.extract.rate_limits]
+# Rate limiting controls for the extraction model
+requests_per_minute = 10
+tokens_per_minute = 200000
+requests_per_day = 400
+
+[llm.decisions]
+# Model identifier for calibrated controlled topic (topic:) evaluation
+model_name = "gemini-decision-1"
+
+# Minimum calibrated yes probability ('noul') and confidence required to apply a topic
+probability_threshold = 0.70
+confidence_threshold = 0.50
+
+# Maximum number of controlled topics applied per item (0 = unlimited)
+max_topics = 5
+
+[llm.decisions.rate_limits]
+# Independent rate limiting controls for the decisions model
+requests_per_minute = 200
+tokens_per_minute = 50000
 requests_per_day = 10000
 
 [llm.retries]
-# Maximum retry attempts on transient network or rate-limit failures
+# Shared maximum retry attempts on transient network or rate-limit failures
 max_retries = 3
 # Exponential backoff base factor (seconds)
 backoff_base = 1.0
@@ -198,10 +227,15 @@ GEMINI_API_KEY=your_gemini_api_key
 In `config/config.toml`:
 
 ```toml
-[llm]
+[llm.extract]
 model_name = "gemini-3.5-flash-lite"
 temperature = 0.0
-max_input_tokens = 10000
+
+[llm.decisions]
+model_name = "gemini-decision-1"
+probability_threshold = 0.70
+confidence_threshold = 0.50
+max_topics = 5
 ```
 
 In `.env`:
@@ -215,10 +249,10 @@ GEMINI_API_KEY=your_gemini_api_key
 ### Model Requirements & Recommendations
 
 For optimal classification performance:
-- **Default Recommendation**: `gemini-3.5-flash-lite` provides ultra-low latency, generous free-tier rate limits, and structured JSON output adherence.
-- **Alternative Models**: `gemini-2.5-flash` or `gemini-2.5-pro` can be specified in `config/config.toml` if deeper scientific reasoning is required.
-- **Temperature**: Keep `temperature = 0.0` to ensure strict, repeatable adherence to taxonomy formatting rules.
-- **Context Length**: Gemini models provide 1M+ token context windows, allowing seamless processing of long academic articles and comprehensive taxonomy rules.
+- **Organism & Clade Extraction (`[llm.extract]`)**: `gemini-3.5-flash-lite` provides ultra-low latency, generous free-tier rate limits, and structured JSON output adherence for open-ended `org:` and `group:` extraction.
+- **Controlled Topic Decisions (`[llm.decisions]`)**: `gemini-decision-1` evaluates all controlled topics in a single forward pass (`POST /v1beta/decisions`) with calibrated `noul` probabilities, `confidence` scores, and 0 output tokens.
+- **Temperature**: Keep `temperature = 0.0` on `[llm.extract]` to ensure strict, repeatable adherence to taxonomy formatting rules.
+- **Thresholds & Caps**: Tune `probability_threshold`, `confidence_threshold`, and `max_topics` under `[llm.decisions]` to balance topic recall and precision. Run with `--verbose` to inspect per-topic `noul` and `confidence` scores in debug logs.
 
 ---
 
@@ -286,23 +320,28 @@ topics = [
 `zotero-tagger` uses Gemini's native multimodal capabilities to analyze scientific literature:
 
 ```
-+-------------------------------------------------------------+
-|              Raw PDF Document (from Zotero API)             |
-+-------------------------------------------------------------+
-                              |
-                              v
-   [ Upload to Google GenAI Files API (application/pdf) ]
-                              |
-                              v
- [ Multimodal Prompt to gemini-3.5-flash-lite with File Part ]
-                              |
-                              v
-   [ Automatic File Deletion from Google Storage on Done ]
-                              |
-                              v
-+-------------------------------------------------------------+
-|               Extracted JSON Taxonomy Response              |
-+-------------------------------------------------------------+
++-----------------------------------------------------------------------+
+|                Raw PDF Document (from Zotero API)                     |
++-----------------------------------------------------------------------+
+                                    |
+                                    v
+              [ Upload once to Google GenAI Files API ]
+                          (shared file.URI)
+                                    |
+                  +-----------------+-----------------+
+                  |                                   |
+                  v                                   v
+ [ gemini-3.5-flash-lite: org/group ]    [ gemini-decision-1: noul ]
+                  |                                   |
+                  +-----------------+-----------------+
+                                    |
+                                    v
+            [ Delete uploaded PDF after both calls finish ]
+                                    |
+                                    v
++-----------------------------------------------------------------------+
+|             Combined org:, group:, topic:, & _ai-tagged               |
++-----------------------------------------------------------------------+
 ```
 
 ### Multimodal Benefits

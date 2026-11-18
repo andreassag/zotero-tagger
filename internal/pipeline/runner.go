@@ -14,6 +14,7 @@ import (
 	"github.com/andreassag/zotero-tagger/internal/tagging"
 	"github.com/andreassag/zotero-tagger/internal/zotero"
 	"github.com/rs/zerolog"
+	"google.golang.org/genai"
 )
 
 type Options struct {
@@ -165,9 +166,11 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 		existingTags[i] = t.Tag
 	}
 
-	sysPrompt := tagging.BuildSystemPrompt(r.cfg.Tagging.ControlledTopics.Topics)
+	sysPrompt := tagging.BuildSystemPrompt()
+	questions := tagging.BuildTopicDecisionQuestions(r.cfg.Tagging.ControlledTopics.Topics)
 
-	var llmRawResp string
+	var extractRawResp string
+	var decisionsRawResp string
 	pdfPath, err := r.zoteroClient.DownloadPDF(ctx, item.Key, opts.GroupID)
 	if err == nil && pdfPath != "" {
 		defer func() { _ = os.Remove(pdfPath) }()
@@ -184,9 +187,41 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 		}
 
 		usrPrompt := tagging.BuildUserPrompt(item.Data.Title, "", existingTags)
-		llmRawResp, err = r.llmClient.CallSyncWithPDFAndCache(ctx, sysPrompt, usrPrompt, pdfPath, opts.UseCache)
-		if err != nil {
-			return fmt.Errorf("LLM API call with PDF failed: %w", err)
+
+		var cleanupFn func()
+		getUploadedFile := sync.OnceValues(func() (*genai.File, error) {
+			uploadedFile, cleanup, uploadErr := r.llmClient.UploadPDF(ctx, pdfPath)
+			if uploadErr != nil {
+				return nil, uploadErr
+			}
+			cleanupFn = cleanup
+			return uploadedFile, nil
+		})
+
+		var extractErr, decisionsErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			extractRawResp, extractErr = r.llmClient.CallSyncWithPDFProviderAndCache(ctx, sysPrompt, usrPrompt, pdfPath, getUploadedFile, opts.UseCache)
+		}()
+		go func() {
+			defer wg.Done()
+			decisionsRawResp, decisionsErr = r.llmClient.CallDecisionsWithPDFProviderAndCache(ctx, usrPrompt, pdfPath, questions, getUploadedFile, opts.UseCache)
+		}()
+		wg.Wait()
+		if cleanupFn != nil {
+			cleanupFn()
+		}
+
+		if extractErr != nil && decisionsErr != nil {
+			return fmt.Errorf("LLM extract and decisions API calls with PDF failed: %w", errors.Join(extractErr, decisionsErr))
+		}
+		if extractErr != nil {
+			return fmt.Errorf("LLM extract API call with PDF failed: %w", extractErr)
+		}
+		if decisionsErr != nil {
+			return fmt.Errorf("LLM decisions API call with PDF failed: %w", decisionsErr)
 		}
 	} else if strings.TrimSpace(item.Data.AbstractNote) != "" {
 		r.logger.Info().Str("itemKey", item.Key).Msg("No PDF attachment found; using abstract note")
@@ -198,21 +233,65 @@ func (r *Runner) processSingleItem(ctx context.Context, item zotero.Item, opts O
 		}
 
 		usrPrompt := tagging.BuildUserPrompt(item.Data.Title, item.Data.AbstractNote, existingTags)
-		llmRawResp, err = r.llmClient.CallSyncWithCache(ctx, sysPrompt, usrPrompt, opts.UseCache)
-		if err != nil {
-			return fmt.Errorf("LLM API call failed: %w", err)
+		var extractErr, decisionsErr error
+		var wg sync.WaitGroup
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			extractRawResp, extractErr = r.llmClient.CallSyncWithCache(ctx, sysPrompt, usrPrompt, opts.UseCache)
+		}()
+		go func() {
+			defer wg.Done()
+			decisionsRawResp, decisionsErr = r.llmClient.CallDecisionsWithCache(ctx, usrPrompt, questions, opts.UseCache)
+		}()
+		wg.Wait()
+
+		if extractErr != nil && decisionsErr != nil {
+			return fmt.Errorf("LLM extract and decisions API calls failed: %w", errors.Join(extractErr, decisionsErr))
+		}
+		if extractErr != nil {
+			return fmt.Errorf("LLM extract API call failed: %w", extractErr)
+		}
+		if decisionsErr != nil {
+			return fmt.Errorf("LLM decisions API call failed: %w", decisionsErr)
 		}
 	} else {
 		return fmt.Errorf("%w for item %s", ErrNoTextAvailable, item.Key)
 	}
 
-	tagResult, err := tagging.ParseResponse(llmRawResp)
+	tagResult, err := tagging.ParseResponse(extractRawResp)
 	if err != nil {
-		return fmt.Errorf("failed to parse LLM output: %w", err)
+		return fmt.Errorf("failed to parse LLM extract output: %w", err)
 	}
 
-	tagResult = tagging.FilterControlledTopics(tagResult, r.cfg.Tagging.ControlledTopics.Topics)
-	formattedTags := tagging.BuildTagList(tagResult, r.cfg.Tagging.SentinelTag)
+	topicMatches, err := tagging.SelectTopicsFromDecisions(
+		decisionsRawResp,
+		r.cfg.Tagging.ControlledTopics.Topics,
+		r.cfg.LLM.Decisions.ProbabilityThreshold,
+		r.cfg.LLM.Decisions.ConfidenceThreshold,
+		r.cfg.LLM.Decisions.MaxTopics,
+	)
+	if err != nil {
+		return fmt.Errorf("failed to parse LLM decisions output: %w", err)
+	}
+
+	topicTags := make([]string, 0, len(topicMatches))
+	for _, m := range topicMatches {
+		r.logger.Debug().
+			Str("itemKey", item.Key).
+			Str("topic", m.Tag).
+			Float64("noul", m.Noul).
+			Float64("confidence", m.Confidence).
+			Msg("Selected topic from decision model")
+		topicTags = append(topicTags, m.Tag)
+	}
+
+	combinedResult := &tagging.TagResult{
+		OrgTags:   tagResult.OrgTags,
+		GroupTags: tagResult.GroupTags,
+		TopicTags: topicTags,
+	}
+	formattedTags := tagging.BuildTagList(combinedResult, r.cfg.Tagging.SentinelTag)
 
 	r.display.RenderTags(formattedTags)
 

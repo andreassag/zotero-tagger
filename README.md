@@ -7,7 +7,7 @@
 
 An automated, high-performance CLI tool that categorizes and tags academic literature in **Zotero** libraries using Google Gemini large language models.
 
-By uploading PDF documents directly to Google via the Google GenAI SDK (defaulting to `gemini-3.5-flash-lite`), `zotero-tagger` delivers standardized, hierarchical, and controlled taxonomy tags back into your Zotero database with full idempotency and concurrency.
+By uploading PDF documents directly to Google via the Google GenAI SDK (`gemini-3.5-flash-lite` for open-ended organism/clade extraction) and evaluating controlled topics via the Gemini Decisions API (`gemini-decision-1`), `zotero-tagger` delivers standardized, hierarchical, and controlled taxonomy tags back into your Zotero database with full idempotency and concurrency.
 
 ---
 
@@ -21,7 +21,7 @@ By uploading PDF documents directly to Google via the Google GenAI SDK (defaulti
   - `org:` &mdash; Standardized lowercase binomial species names (e.g., `org:streptococcus-mutans`). Excludes lab-tool cloning hosts and expression vectors unless they are the primary subject of research.
   - `group:` &mdash; Higher-level taxonomic clades, families, or phenotypic traits (e.g., `group:streptococcaceae`, `group:gram-negative`).
   - `topic:` &mdash; Controlled subject terms validated strictly against a user-defined vocabulary list to prevent taxonomy drift and hallucinated keywords.
-- **Google GenAI Integration**: Uses the official Google GenAI SDK (`google.golang.org/genai`) defaulting to high-speed, cost-effective `gemini-3.5-flash-lite`.
+- **Google GenAI Integration**: Uses `gemini-3.5-flash-lite` via the official Google GenAI SDK (`google.golang.org/genai`) for organism/clade extraction and `gemini-decision-1` (`POST /v1beta/decisions`) for calibrated `noul` topic classification with independent model settings and rate limits.
 - **Safety, Concurrency & Idempotency**:
   - Sentinel tagging (`_ai-tagged`) prevents duplicate processing on subsequent runs.
   - `--dry-run` mode provides rich terminal table previews without mutating your Zotero library.
@@ -36,9 +36,13 @@ By uploading PDF documents directly to Google via the Google GenAI SDK (defaulti
 ```mermaid
 flowchart LR
     A[Zotero Library] -->|Fetch Unprocessed Items| B[PDF / Abstract Receiver]
-    B -->|Upload Raw PDF to Google| C[Google Gemini API]
-    C --> D[JSON Schema & Taxonomy Validator]
-    D -->|Controlled Topic Filter| E[Tag Builder]
+    B -->|Upload PDF Once via Files API| F[Shared File URI]
+    F -->|Concurrent File Part| C[gemini-3.5-flash-lite: org & group extraction]
+    F -->|Concurrent Document URI| D[gemini-decision-1: calibrated noul topics]
+    B -->|Abstract Text Fallback| C
+    B -->|Abstract Text Fallback| D
+    C --> E[Tag Builder]
+    D -->|Probability & Confidence Filter| E
     E -->|Optimistic Lock Update| A
 ```
 
@@ -94,14 +98,29 @@ GEMINI_API_KEY=your_gemini_api_key
 Adjust the configuration file to match your model, rate limits, and controlled topics:
 
 ```toml
-[llm]
+[llm.extract]
 model_name = "gemini-3.5-flash-lite"
 temperature = 0.0
 
-[llm.rate_limits]
-requests_per_minute = 1000
-tokens_per_minute = 1000000
+[llm.extract.rate_limits]
+requests_per_minute = 10
+tokens_per_minute = 200000
+requests_per_day = 400
+
+[llm.decisions]
+model_name = "gemini-decision-1"
+probability_threshold = 0.70
+confidence_threshold = 0.50
+max_topics = 5
+
+[llm.decisions.rate_limits]
+requests_per_minute = 200
+tokens_per_minute = 50000
 requests_per_day = 10000
+
+[llm.retries]
+max_retries = 3
+backoff_base = 1.0
 
 [zotero]
 library_type = "user" # "user" or "group"
