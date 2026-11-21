@@ -57,6 +57,7 @@ func SelectTopicsFromDecisions(rawJSON string, allowedTopics []string, probThres
 	}
 
 	seen := make(map[string]bool, len(allowedTopics))
+	ids := topicQuestionIDs(allowedTopics)
 	matches := make([]TopicMatch, 0)
 	for _, topic := range allowedTopics {
 		clean := strings.TrimSpace(topic)
@@ -65,7 +66,7 @@ func SelectTopicsFromDecisions(rawJSON string, allowedTopics []string, probThres
 		}
 		seen[clean] = true
 
-		ans, ok := resp.Answers[clean]
+		ans, ok := resp.Answers[ids[clean]]
 		if !ok {
 			continue
 		}

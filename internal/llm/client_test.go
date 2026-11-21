@@ -38,6 +38,18 @@ func newTestClient(serverURL string, client *http.Client) (*Client, error) {
 	return NewClientForTest(genaiClient, client, serverURL, "gemini-3.5-flash-lite", 0.0, "gemini-decision-1"), nil
 }
 
+func assertBiofilmDecisionQuestion(t *testing.T, question interface{}) {
+	t.Helper()
+	assert.Equal(t, map[string]interface{}{
+		"type":         "noul",
+		"instructions": `Is "biofilm" a primary research subject, core scientific focus, or central methodology of this paper?`,
+		"criteria": map[string]interface{}{
+			"true_description":  `The paper directly investigates, measures, models, or centers on "biofilm" as a core scientific topic or primary methodology.`,
+			"false_description": `The paper does not cover "biofilm", or only mentions it in passing as background context, related literature, or routine boilerplate.`,
+		},
+	}, question)
+}
+
 func TestCallSync_Success(t *testing.T) {
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
 
@@ -108,8 +120,7 @@ func TestCallDecisions_Success(t *testing.T) {
 		assert.Equal(t, "Title: Biofilm Study", reqBody["input"])
 		questionsMap, ok := reqBody["questions"].(map[string]interface{})
 		require.True(t, ok)
-		_, hasBiofilm := questionsMap["biofilm"]
-		assert.True(t, hasBiofilm)
+		assertBiofilmDecisionQuestion(t, questionsMap["biofilm"])
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"answers":{"biofilm":{"type":"noul","noul":0.91,"confidence":0.88}}}`))
@@ -144,9 +155,9 @@ func TestCallDecisionsWithPDF_Success(t *testing.T) {
 		assert.Equal(t, "test-api-key", r.Header.Get("x-goog-api-key"))
 
 		var reqBody struct {
-			Model     string                              `json:"model"`
-			Input     []decisionInputPart                 `json:"input"`
-			Questions map[string]tagging.DecisionQuestion `json:"questions"`
+			Model     string                 `json:"model"`
+			Input     []decisionInputPart    `json:"input"`
+			Questions map[string]interface{} `json:"questions"`
 		}
 		decodeErr := json.NewDecoder(r.Body).Decode(&reqBody)
 		require.NoError(t, decodeErr)
@@ -157,6 +168,7 @@ func TestCallDecisionsWithPDF_Success(t *testing.T) {
 		assert.Equal(t, "application/pdf", reqBody.Input[0].MimeType)
 		assert.Equal(t, "text", reqBody.Input[1].Type)
 		assert.Equal(t, "Title: PDF Study", reqBody.Input[1].Text)
+		assertBiofilmDecisionQuestion(t, reqBody.Questions["biofilm"])
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"answers":{"biofilm":{"type":"noul","noul":0.85,"confidence":0.79}}}`))
@@ -359,9 +371,9 @@ func TestCallDecisionsWithFileURI_Success(t *testing.T) {
 		assert.Equal(t, "/v1beta/decisions", r.URL.Path)
 
 		var reqBody struct {
-			Model     string                              `json:"model"`
-			Input     []decisionInputPart                 `json:"input"`
-			Questions map[string]tagging.DecisionQuestion `json:"questions"`
+			Model     string                 `json:"model"`
+			Input     []decisionInputPart    `json:"input"`
+			Questions map[string]interface{} `json:"questions"`
 		}
 		require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
 		assert.Equal(t, "gemini-decision-1", reqBody.Model)
@@ -372,6 +384,7 @@ func TestCallDecisionsWithFileURI_Success(t *testing.T) {
 		assert.Equal(t, "application/pdf", reqBody.Input[0].MimeType)
 		assert.Equal(t, "text", reqBody.Input[1].Type)
 		assert.Equal(t, "Title: URI Study", reqBody.Input[1].Text)
+		assertBiofilmDecisionQuestion(t, reqBody.Questions["biofilm"])
 
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"answers":{"biofilm":{"type":"noul","noul":0.91,"confidence":0.87}}}`))

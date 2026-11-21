@@ -1,6 +1,9 @@
 package tagging
 
 import (
+	"encoding/json"
+	"regexp"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -66,20 +69,55 @@ func TestBuildTopicDecisionQuestions(t *testing.T) {
 	require.True(t, ok)
 	assert.Equal(t, "noul", q1.Type)
 	assert.Contains(t, q1.Instructions, `"biofilm"`)
-	assert.Contains(t, q1.TrueDescription, `"biofilm"`)
-	assert.Contains(t, q1.FalseDescription, `"biofilm"`)
+	require.NotNil(t, q1.Criteria)
+	assert.Contains(t, q1.Criteria.TrueDescription, `"biofilm"`)
+	assert.Contains(t, q1.Criteria.FalseDescription, `"biofilm"`)
 
-	q2, ok := questions["oral microbiology"]
+	q2, ok := questions["_topic_1"]
 	require.True(t, ok)
 	assert.Equal(t, "noul", q2.Type)
 	assert.Contains(t, q2.Instructions, `"oral microbiology"`)
+}
+
+func TestTopicQuestionIDsAndAnswerMapping(t *testing.T) {
+	longTopic := strings.Repeat("x", 65)
+	maxLengthTopic := strings.Repeat("y", 64)
+	topics := []string{"a b", "a-b", "_topic_0", "16S rRNA", longTopic, "microbiología", "a_b", maxLengthTopic, " a b ", ""}
+	expectedIDs := []string{"_topic_0", "a-b", "_topic_2", "_topic_3", "_topic_4", "_topic_5", "a_b", maxLengthTopic}
+	questions := BuildTopicDecisionQuestions(topics)
+	require.Len(t, questions, len(expectedIDs))
+
+	validID := regexp.MustCompile(`^[A-Za-z0-9_-]{1,64}$`)
+	for i, id := range expectedIDs {
+		assert.Regexp(t, validID, id)
+		question, ok := questions[id]
+		require.True(t, ok, "missing question for %q", topics[i])
+		assert.Contains(t, question.Instructions, topics[i])
+	}
+
+	for _, selected := range []int{0, 1, 2, 3, 4, 5, 6, 7} {
+		answers := make(map[string]DecisionAnswer, len(expectedIDs))
+		for i, id := range expectedIDs {
+			probability := 0.1
+			if i == selected {
+				probability = 0.9
+			}
+			answers[id] = DecisionAnswer{Type: "noul", Noul: probability, Confidence: 0.9}
+		}
+		raw, err := json.Marshal(DecisionResponse{Answers: answers})
+		require.NoError(t, err)
+		matches, err := SelectTopicsFromDecisions(string(raw), topics, 0.7, 0.5, 0)
+		require.NoError(t, err)
+		require.Len(t, matches, 1)
+		assert.Equal(t, topics[selected], matches[0].Topic)
+	}
 }
 
 func TestSelectTopicsFromDecisions(t *testing.T) {
 	rawJSON := `{
 		"answers": {
 			"biofilm": {"type": "noul", "noul": 0.92, "confidence": 0.85},
-			"oral microbiology": {"type": "noul", "noul": 0.85, "confidence": 0.90},
+			"_topic_1": {"type": "noul", "noul": 0.85, "confidence": 0.90},
 			"quorum-sensing": {"type": "noul", "noul": 0.85, "confidence": 0.95},
 			"genomics": {"type": "noul", "noul": 0.85, "confidence": 0.95},
 			"pcr": {"type": "noul", "noul": 0.69, "confidence": 0.95},

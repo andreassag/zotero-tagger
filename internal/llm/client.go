@@ -447,9 +447,11 @@ func estimateDecisionTokens(userPrompt string, questions map[string]tagging.Deci
 	words := len(strings.Fields(userPrompt))
 	for topic, q := range questions {
 		words += len(strings.Fields(topic)) +
-			len(strings.Fields(q.Instructions)) +
-			len(strings.Fields(q.TrueDescription)) +
-			len(strings.Fields(q.FalseDescription))
+			len(strings.Fields(q.Instructions))
+		if q.Criteria != nil {
+			words += len(strings.Fields(q.Criteria.TrueDescription)) +
+				len(strings.Fields(q.Criteria.FalseDescription))
+		}
 	}
 	return int(float64(words) * 1.3)
 }

@@ -264,10 +264,19 @@ func TestRunner_Run_AppliesCombinedTags(t *testing.T) {
 	geminiServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if r.URL.Path == "/v1beta/decisions" {
+			var request struct {
+				Questions map[string]struct {
+					Instructions string `json:"instructions"`
+				} `json:"questions"`
+			}
+			require.NoError(t, json.NewDecoder(r.Body).Decode(&request))
+			require.Contains(t, request.Questions, "_topic_2")
+			assert.Contains(t, request.Questions["_topic_2"].Instructions, `"oral microbiology"`)
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"answers": map[string]interface{}{
-					"biofilm": map[string]interface{}{"type": "noul", "noul": 0.90, "confidence": 0.85},
-					"pcr":     map[string]interface{}{"type": "noul", "noul": 0.40, "confidence": 0.90},
+					"biofilm":  map[string]interface{}{"type": "noul", "noul": 0.90, "confidence": 0.85},
+					"pcr":      map[string]interface{}{"type": "noul", "noul": 0.40, "confidence": 0.90},
+					"_topic_2": map[string]interface{}{"type": "noul", "noul": 0.80, "confidence": 0.90},
 				},
 			})
 			return
@@ -297,6 +306,7 @@ func TestRunner_Run_AppliesCombinedTags(t *testing.T) {
 
 	runner, err := newTestRunner(zoteroServer.URL, geminiServer.URL, geminiServer.Client())
 	require.NoError(t, err)
+	runner.cfg.Tagging.ControlledTopics.Topics = append(runner.cfg.Tagging.ControlledTopics.Topics, "oral microbiology")
 
 	err = runner.Run(context.Background(), Options{DryRun: false})
 	require.NoError(t, err)
@@ -309,6 +319,7 @@ func TestRunner_Run_AppliesCombinedTags(t *testing.T) {
 		"org:pseudomonas-aeruginosa",
 		"group:gram-negative",
 		"topic:biofilm",
+		"topic:oral-microbiology",
 		"_ai-tagged",
 	}, tagStrings)
 }
@@ -627,6 +638,9 @@ func TestRunner_Run_PDFSharedUploadAndConcurrentExecution(t *testing.T) {
 					MimeType string `json:"mime_type"`
 					Text     string `json:"text"`
 				} `json:"input"`
+				Questions map[string]struct {
+					Instructions string `json:"instructions"`
+				} `json:"questions"`
 			}
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&reqBody))
 			require.Len(t, reqBody.Input, 2)
@@ -634,6 +648,8 @@ func TestRunner_Run_PDFSharedUploadAndConcurrentExecution(t *testing.T) {
 			assert.Equal(t, sharedFileURI, reqBody.Input[0].URI)
 			assert.Empty(t, reqBody.Input[0].Data)
 			assert.Equal(t, "application/pdf", reqBody.Input[0].MimeType)
+			require.Contains(t, reqBody.Questions, "_topic_2")
+			assert.Contains(t, reqBody.Questions["_topic_2"].Instructions, `"whole genome sequencing"`)
 
 			inflightWG.Done()
 			select {
@@ -649,8 +665,9 @@ func TestRunner_Run_PDFSharedUploadAndConcurrentExecution(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			_ = json.NewEncoder(w).Encode(map[string]interface{}{
 				"answers": map[string]interface{}{
-					"biofilm": map[string]interface{}{"type": "noul", "noul": 0.92, "confidence": 0.89},
-					"pcr":     map[string]interface{}{"type": "noul", "noul": 0.25, "confidence": 0.90},
+					"biofilm":  map[string]interface{}{"type": "noul", "noul": 0.92, "confidence": 0.89},
+					"pcr":      map[string]interface{}{"type": "noul", "noul": 0.25, "confidence": 0.90},
+					"_topic_2": map[string]interface{}{"type": "noul", "noul": 0.80, "confidence": 0.90},
 				},
 			})
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1beta/files/shared123":
@@ -671,6 +688,7 @@ func TestRunner_Run_PDFSharedUploadAndConcurrentExecution(t *testing.T) {
 
 	runner, err := newTestRunner(zoteroServer.URL, geminiServer.URL, geminiServer.Client())
 	require.NoError(t, err)
+	runner.cfg.Tagging.ControlledTopics.Topics = append(runner.cfg.Tagging.ControlledTopics.Topics, "whole genome sequencing")
 
 	err = runner.Run(context.Background(), Options{DryRun: false})
 	require.NoError(t, err)
@@ -691,6 +709,7 @@ func TestRunner_Run_PDFSharedUploadAndConcurrentExecution(t *testing.T) {
 		"org:streptococcus-mutans",
 		"group:streptococcaceae",
 		"topic:biofilm",
+		"topic:whole-genome-sequencing",
 		"_ai-tagged",
 	}, tagStrings)
 }
