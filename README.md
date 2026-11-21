@@ -7,27 +7,21 @@
 
 An automated, high-performance CLI tool that categorizes and tags academic literature in **Zotero** libraries using Google Gemini large language models.
 
-By integrating PDF full-text extraction, rule-based text reduction heuristics (70–80% token savings), zero-token local biological entity pre-extraction, and Google GenAI SDK endpoints (defaulting to `gemini-3.5-flash-lite`), `zotero-tagger` delivers standardized, hierarchical, and controlled taxonomy tags back into your Zotero database with full idempotency and concurrency.
+By uploading PDF documents directly to Google via the Google GenAI SDK (`gemini-3.5-flash-lite` for open-ended organism/clade extraction) and evaluating controlled topics via the Gemini Decisions API (`gemini-decision-1`), `zotero-tagger` delivers standardized, hierarchical, and controlled taxonomy tags back into your Zotero database with full idempotency and concurrency.
 
 ---
 
 ## Key Features
 
 - **Direct Zotero REST API Sync**: Seamlessly processes user libraries or shared group libraries with automatic pagination, exponential backoff, and HTTP 412 optimistic locking prevention.
-- **Intelligent Full-Text Extraction**: Automatically downloads and parses attached PDF files using `pdftotext` (poppler-utils), with graceful fallback to item abstract notes.
-- **70–80% Token Optimization**:
-  - Strips parenthetical and bracketed academic citations.
-  - Truncates bibliographies, reference lists, and appendix sections.
-  - Prioritizes core scientific sections according to IMRAD hierarchy (Abstract &rarr; Conclusion &rarr; Introduction).
-  - Enforces configurable token budgets to maximize LLM cost efficiency.
-- **Zero-Token Local Entity Pre-Extraction**:
-  - Scans raw text with optimized regular expressions for binomial nomenclature (e.g., *Escherichia coli*), genus notations (*Streptococcus sp.*), and taxonomic suffixes (*-aceae*, *-ales*, *-cocci*).
-  - Feeds pre-extracted candidate entities as context hints to the LLM without additional token overhead.
+- **Native PDF Document Understanding**: Directly uploads attached PDF files to Google via the Google GenAI Files API for multimodal comprehension—no local `pdftotext` or `poppler-utils` required!
+- **Pure Multimodal Taxonomy Extraction**:
+  - Leverages Google Gemini's advanced multimodal reasoning to analyze the complete paper and identify focal organisms, higher-order clades, and topic tags.
 - **Strict, Multi-Tiered Taxonomy Namespacing**:
   - `org:` &mdash; Standardized lowercase binomial species names (e.g., `org:streptococcus-mutans`). Excludes lab-tool cloning hosts and expression vectors unless they are the primary subject of research.
   - `group:` &mdash; Higher-level taxonomic clades, families, or phenotypic traits (e.g., `group:streptococcaceae`, `group:gram-negative`).
   - `topic:` &mdash; Controlled subject terms validated strictly against a user-defined vocabulary list to prevent taxonomy drift and hallucinated keywords.
-- **Google GenAI Integration**: Uses the official Google GenAI SDK (`google.golang.org/genai`) defaulting to high-speed, cost-effective `gemini-3.5-flash-lite`.
+- **Google GenAI Integration**: Uses `gemini-3.5-flash-lite` via the official Google GenAI SDK (`google.golang.org/genai`) for organism/clade extraction and `gemini-decision-1` (`POST /v1beta/decisions`) for calibrated `noul` topic classification with independent model settings and rate limits.
 - **Safety, Concurrency & Idempotency**:
   - Sentinel tagging (`_ai-tagged`) prevents duplicate processing on subsequent runs.
   - `--dry-run` mode provides rich terminal table previews without mutating your Zotero library.
@@ -41,13 +35,15 @@ By integrating PDF full-text extraction, rule-based text reduction heuristics (7
 
 ```mermaid
 flowchart LR
-    A[Zotero Library] -->|Fetch Unprocessed Items| B[PDF / Abstract Extractor]
-    B --> C[Text Preprocessor & Token Reducer]
-    C -->|Regex Pre-Extraction| D[Local Species Heuristics]
-    C & D --> E[Google Gemini LLM API]
-    E --> F[JSON Schema & Taxonomy Validator]
-    F -->|Controlled Topic Filter| G[Tag Builder]
-    G -->|Optimistic Lock Update| A
+    A[Zotero Library] -->|Fetch Unprocessed Items| B[PDF / Abstract Receiver]
+    B -->|Upload PDF Once via Files API| F[Shared File URI]
+    F -->|Concurrent File Part| C[gemini-3.5-flash-lite: org & group extraction]
+    F -->|Concurrent Document URI| D[gemini-decision-1: calibrated noul topics]
+    B -->|Abstract Text Fallback| C
+    B -->|Abstract Text Fallback| D
+    C --> E[Tag Builder]
+    D -->|Probability & Confidence Filter| E
+    E -->|Optimistic Lock Update| A
 ```
 
 ---
@@ -57,17 +53,22 @@ flowchart LR
 ### Prerequisites
 
 - **Go 1.23+** (if building from source)
-- **`poppler-utils`** (required for `pdftotext` PDF extraction):
-  - **Debian / Ubuntu**: `sudo apt install poppler-utils`
-  - **macOS** (Homebrew): `brew install poppler`
-  - **Arch Linux**: `sudo pacman -S poppler`
-  - **Alpine Linux**: `apk add poppler-utils`
+- **Zotero Account & API Key**
+- **Google Gemini API Key** (`GEMINI_API_KEY`)
 
 ### 1. Clone & Build
+
+Using Make:
 
 ```bash
 git clone https://github.com/andreassag/zotero-tagger.git
 cd zotero-tagger
+make build
+```
+
+Or using standard Go CLI:
+
+```bash
 go build -o zotero-tagger ./cmd/zotero-tagger
 ```
 
@@ -97,15 +98,29 @@ GEMINI_API_KEY=your_gemini_api_key
 Adjust the configuration file to match your model, rate limits, and controlled topics:
 
 ```toml
-[llm]
+[llm.extract]
 model_name = "gemini-3.5-flash-lite"
 temperature = 0.0
-max_input_tokens = 10000
 
-[llm.rate_limits]
-requests_per_minute = 1000
-tokens_per_minute = 1000000
+[llm.extract.rate_limits]
+requests_per_minute = 10
+tokens_per_minute = 200000
+requests_per_day = 400
+
+[llm.decisions]
+model_name = "gemini-decision-1"
+probability_threshold = 0.70
+confidence_threshold = 0.50
+max_topics = 5
+
+[llm.decisions.rate_limits]
+requests_per_minute = 200
+tokens_per_minute = 50000
 requests_per_day = 10000
+
+[llm.retries]
+max_retries = 3
+backoff_base = 1.0
 
 [zotero]
 library_type = "user" # "user" or "group"
@@ -114,7 +129,7 @@ library_type = "user" # "user" or "group"
 topics = [
     "oral microbiology",
     "biofilm",
-    "quorum sensing",
+    "quorum-sensing",
     "antimicrobial resistance",
     "genomics",
     "metagenomics",
@@ -156,9 +171,10 @@ zotero-tagger tag [flags]
 | `--item` | `string` | `""` | Process a single specific Zotero item key |
 | `--concurrent` | `int` | `1` | Number of parallel worker threads |
 | `--reprocess` | `bool` | `false` | Reprocess items even if the sentinel tag (`_ai-tagged`) exists |
-| `--cache` | `bool` | `false` | Cache LLM prompt responses on disk to prevent redundant API calls |
-| `--skip-llm` | `bool` | `false` | Run text extraction and reduction without invoking LLM or writing tags |
 | `--verbose` | `bool` | `false` | Enable detailed debug logging |
+| `--json-log` | `bool` | `false` | Output logs in structured JSON format |
+| `--cache` | `bool` | `false` | Cache LLM prompt responses on disk to prevent redundant API calls |
+| `--skip-llm` | `bool` | `false` | Skip LLM calls and Zotero tag updates to inspect text extraction only |
 
 ---
 
@@ -166,7 +182,7 @@ zotero-tagger tag [flags]
 
 #### 1. Dry Run / Preview
 
-Run a dry run on 5 items to preview generated tags and token reduction metrics in the terminal:
+Run a dry run on 5 items to preview generated tags in the terminal:
 
 ```bash
 ./zotero-tagger tag --dry-run --limit 5
@@ -206,7 +222,7 @@ Refresh tags across all papers, bypassing the sentinel tag:
 
 #### 6. Development & Inspection Mode
 
-Test text reduction heuristics and inspect candidate species without calling the LLM API:
+Test document acquisition without calling the LLM API:
 
 ```bash
 ./zotero-tagger tag --skip-llm --limit 3 --verbose
@@ -216,7 +232,7 @@ Test text reduction heuristics and inspect candidate species without calling the
 
 ## Running with Docker
 
-`zotero-tagger` provides a lightweight Alpine container image with `poppler-utils` pre-installed.
+`zotero-tagger` provides a lightweight Alpine container image with CA certificates pre-configured.
 
 ### Using Docker Compose
 

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -20,6 +21,7 @@ type RateLimiter struct {
 	dailyCount int
 	dailyLimit int
 	dailyReset time.Time
+	statePath  string
 }
 
 type PersistedState struct {
@@ -27,18 +29,42 @@ type PersistedState struct {
 	DailyReset time.Time `json:"daily_reset"`
 }
 
-func getStateFilePath() string {
+func sanitizeLimiterName(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" || name == "default" {
+		return "default"
+	}
+	var b strings.Builder
+	for _, r := range name {
+		if (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') || r == '-' || r == '_' {
+			b.WriteRune(r)
+		}
+	}
+	if b.Len() == 0 {
+		return "default"
+	}
+	return b.String()
+}
+
+func getStateFilePath(name string) string {
+	safeName := sanitizeLimiterName(name)
+	fileName := "state.json"
+	fallbackName := ".zotero-tagger-state.json"
+	if safeName != "default" {
+		fileName = fmt.Sprintf("state-%s.json", safeName)
+		fallbackName = fmt.Sprintf(".zotero-tagger-state-%s.json", safeName)
+	}
+
 	configDir, err := os.UserConfigDir()
 	if err != nil {
-		return ".zotero-tagger-state.json"
+		return fallbackName
 	}
 	dir := filepath.Join(configDir, "zotero-tagger")
 	_ = os.MkdirAll(dir, 0750)
-	return filepath.Join(dir, "state.json")
+	return filepath.Join(dir, fileName)
 }
 
-func loadPersistedState() PersistedState {
-	path := getStateFilePath()
+func loadPersistedState(path string) PersistedState {
 	data, err := os.ReadFile(filepath.Clean(path))
 	if err != nil {
 		return PersistedState{DailyCount: 0, DailyReset: time.Now().Add(24 * time.Hour)}
@@ -50,8 +76,7 @@ func loadPersistedState() PersistedState {
 	return state
 }
 
-func savePersistedState(state PersistedState) {
-	path := getStateFilePath()
+func savePersistedState(path string, state PersistedState) {
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err == nil {
 		_ = os.WriteFile(filepath.Clean(path), data, 0600)
@@ -59,6 +84,10 @@ func savePersistedState(state PersistedState) {
 }
 
 func NewRateLimiter(cfg config.RateLimitConfig) *RateLimiter {
+	return NewNamedRateLimiter("default", cfg)
+}
+
+func NewNamedRateLimiter(name string, cfg config.RateLimitConfig) *RateLimiter {
 	var rpmLimiter *rate.Limiter
 	if cfg.RequestsPerMinute > 0 {
 		limit := rate.Every(time.Minute / time.Duration(cfg.RequestsPerMinute))
@@ -75,12 +104,13 @@ func NewRateLimiter(cfg config.RateLimitConfig) *RateLimiter {
 		tpmLimiter = rate.NewLimiter(rate.Inf, 1000000000)
 	}
 
-	state := loadPersistedState()
+	statePath := getStateFilePath(name)
+	state := loadPersistedState(statePath)
 	now := time.Now()
 	if now.After(state.DailyReset) {
 		state.DailyCount = 0
 		state.DailyReset = now.Add(24 * time.Hour)
-		savePersistedState(state)
+		savePersistedState(statePath, state)
 	}
 
 	return &RateLimiter{
@@ -89,6 +119,7 @@ func NewRateLimiter(cfg config.RateLimitConfig) *RateLimiter {
 		dailyLimit: cfg.RequestsPerDay,
 		dailyCount: state.DailyCount,
 		dailyReset: state.DailyReset,
+		statePath:  statePath,
 	}
 }
 
@@ -104,7 +135,7 @@ func (rl *RateLimiter) Wait(ctx context.Context, estimatedTokens int) error {
 		return fmt.Errorf("daily rate limit exceeded (%d/%d requests used today)", rl.dailyCount, rl.dailyLimit)
 	}
 	rl.dailyCount++
-	savePersistedState(PersistedState{DailyCount: rl.dailyCount, DailyReset: rl.dailyReset})
+	savePersistedState(rl.statePath, PersistedState{DailyCount: rl.dailyCount, DailyReset: rl.dailyReset})
 	rl.mu.Unlock()
 
 	if rl.rpm.Limit() != rate.Inf {

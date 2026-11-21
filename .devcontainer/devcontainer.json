@@ -1,0 +1,61 @@
+{
+  "name": "Zotero AI Tagger",
+  "image": "mcr.microsoft.com/devcontainers/go:1.27-bookworm",
+  "features": {
+    "ghcr.io/devcontainers/features/docker-in-docker:4.1.3": {},
+    "ghcr.io/devcontainers/features/github-cli:1": {}
+  },
+  "hostRequirements": {
+    "cpus": 2,
+    "memory": "4gb",
+    "storage": "32gb"
+  },
+  "secrets": {
+    "ZOTERO_USER_ID": {
+      "description": "Your Zotero numeric User ID (https://www.zotero.org/settings/keys)"
+    },
+    "ZOTERO_API_KEY": {
+      "description": "Your Zotero API key with library read/write permissions (https://www.zotero.org/settings/keys)"
+    },
+    "GEMINI_API_KEY": {
+      "description": "Google Gemini API key from Google AI Studio (https://aistudio.google.com/app/apikey)"
+    }
+  },
+  "onCreateCommand": "bash .devcontainer/setup.sh --deps-only",
+  "postCreateCommand": "bash .devcontainer/setup.sh",
+  "customizations": {
+    "codespaces": {
+      "openFiles": [
+        "README.md",
+        "config/config.toml"
+      ]
+    },
+    "vscode": {
+      "extensions": [
+        "golang.go",
+        "tamasfe.even-better-toml",
+        "ms-azuretools.vscode-docker",
+        "redhat.vscode-yaml",
+        "github.vscode-github-actions",
+        "bierner.markdown-mermaid"
+      ],
+      "settings": {
+        "go.useLanguageServer": true,
+        "go.toolsManagement.checkForUpdates": "local",
+        "go.lintTool": "golangci-lint",
+        "go.testFlags": [
+          "-v",
+          "-race"
+        ],
+        "go.formatTool": "gofmt",
+        "[go]": {
+          "editor.formatOnSave": true,
+          "editor.codeActionsOnSave": {
+            "source.organizeImports": "explicit"
+          }
+        }
+      }
+    }
+  },
+  "remoteUser": "vscode"
+}
