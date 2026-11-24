@@ -12,8 +12,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/andreassag/zotero-tagger/internal/config"
 	"github.com/andreassag/zotero-tagger/internal/tagging"
@@ -567,23 +570,21 @@ func TestPDFTokenEstimationIncludesPromptsAndQuestions(t *testing.T) {
 	assert.Greater(t, extractExtra, 0)
 	assert.Greater(t, decisionExtra, 0)
 
-	// Burst == 2000 is insufficient because 2000 + prompt/question tokens > 2000.
+	// Requests larger than the burst (2000) are clamped and wait instead of failing.
 	client.extractRateLimiter = NewNamedRateLimiter("extract-tight", config.RateLimitConfig{TokensPerMinute: 2000})
 	_, err = client.CallSyncWithUploadedFile(context.Background(), sysPrompt, usrPrompt, &genai.File{
 		Name:     "files/test1",
 		URI:      "https://generativelanguage.googleapis.com/v1beta/files/test1",
 		MIMEType: "application/pdf",
 	})
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds limiter's burst")
+	require.NoError(t, err) // oversized requests are clamped to the burst, not rejected
 
 	client.decisionRateLimiter = NewNamedRateLimiter("decisions-tight", config.RateLimitConfig{TokensPerMinute: 2000})
 	_, err = client.CallDecisionsWithFileURI(context.Background(), usrPrompt, "https://generativelanguage.googleapis.com/v1beta/files/test1", questions)
-	require.Error(t, err)
-	assert.Contains(t, err.Error(), "exceeds limiter's burst")
+	require.NoError(t, err) // oversized requests are clamped to the burst, not rejected
 
 	// Burst == 2000 + estimated prompt/question tokens succeeds.
-	client.extractRateLimiter = NewNamedRateLimiter("extract-exact", config.RateLimitConfig{TokensPerMinute: pdfBaseTokens + extractExtra})
+	client.extractRateLimiter = NewNamedRateLimiter("extract-exact", config.RateLimitConfig{TokensPerMinute: pdfFallbackTokens + extractExtra})
 	_, err = client.CallSyncWithUploadedFile(context.Background(), sysPrompt, usrPrompt, &genai.File{
 		Name:     "files/test1",
 		URI:      "https://generativelanguage.googleapis.com/v1beta/files/test1",
@@ -591,7 +592,7 @@ func TestPDFTokenEstimationIncludesPromptsAndQuestions(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	client.decisionRateLimiter = NewNamedRateLimiter("decisions-exact", config.RateLimitConfig{TokensPerMinute: pdfBaseTokens + decisionExtra})
+	client.decisionRateLimiter = NewNamedRateLimiter("decisions-exact", config.RateLimitConfig{TokensPerMinute: pdfFallbackTokens + decisionExtra})
 	_, err = client.CallDecisionsWithFileURI(context.Background(), usrPrompt, "https://generativelanguage.googleapis.com/v1beta/files/test1", questions)
 	require.NoError(t, err)
 }
@@ -890,4 +891,53 @@ func TestUploadPDF_DoesNotConsumeModelQuota(t *testing.T) {
 
 	_, err = client.CallSync(context.Background(), "sys", "user")
 	require.NoError(t, err)
+}
+
+func TestRateLimiter_ClampsOversizedRequests(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	rl := NewNamedRateLimiter("clamp", config.RateLimitConfig{TokensPerMinute: 1000})
+	require.NoError(t, rl.Wait(context.Background(), 5000))
+}
+
+func TestRateLimiter_ReconcileChargesShortfall(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+	rl := NewNamedRateLimiter("reconcile", config.RateLimitConfig{TokensPerMinute: 6000})
+	require.NoError(t, rl.Wait(context.Background(), 6000)) // drain the bucket
+	rl.Reconcile(0, 6000)                                   // charge extra usage as debt
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	assert.Error(t, rl.Wait(ctx, 1000))
+
+	rl.Reconcile(100, 50) // over-estimates are ignored
+}
+
+func TestPDFProvider_LargerDocumentReservesMoreTokens(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{}"}],"role":"model"},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := newTestClient(server.URL, server.Client())
+	require.NoError(t, err)
+
+	pages := strings.Repeat("<</Type /Page>>\n", 50)
+	pdf := filepath.Join(t.TempDir(), "big.pdf")
+	require.NoError(t, os.WriteFile(pdf, []byte("%PDF-1.4\n"+pages), 0600))
+
+	// Burst of 1000 tokens can't cover 50 pages; the second call must have to wait.
+	client.extractRateLimiter = NewNamedRateLimiter("extract-big", config.RateLimitConfig{TokensPerMinute: 1000})
+	provider := func() (*genai.File, error) {
+		return &genai.File{Name: "files/x", URI: "https://example.test/files/x", MIMEType: "application/pdf"}, nil
+	}
+	_, err = client.CallSyncWithPDFProviderAndCache(context.Background(), "s", "u", pdf, provider, false)
+	require.NoError(t, err)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+	defer cancel()
+	_, err = client.CallSyncWithPDFProviderAndCache(ctx, "s", "u", pdf, provider, false)
+	assert.Error(t, err)
 }

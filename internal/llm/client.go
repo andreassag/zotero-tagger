@@ -25,7 +25,6 @@ import (
 
 const (
 	defaultGeminiBaseURL = "https://generativelanguage.googleapis.com"
-	pdfBaseTokens        = 2000
 )
 
 type Client struct {
@@ -353,11 +352,15 @@ func (c *Client) UploadPDF(ctx context.Context, pdfPath string) (*genai.File, fu
 }
 
 func (c *Client) CallSyncWithUploadedFile(ctx context.Context, systemPrompt, userPrompt string, uploadedFile *genai.File) (string, error) {
+	return c.callSyncWithUploadedFile(ctx, systemPrompt, userPrompt, uploadedFile, pdfFallbackTokens)
+}
+
+func (c *Client) callSyncWithUploadedFile(ctx context.Context, systemPrompt, userPrompt string, uploadedFile *genai.File, docTokens int) (string, error) {
 	if uploadedFile == nil || strings.TrimSpace(uploadedFile.URI) == "" {
 		return "", fmt.Errorf("uploaded PDF file is missing URI")
 	}
 
-	estimatedTokens := pdfBaseTokens + estimateExtractTokens(systemPrompt, userPrompt)
+	estimatedTokens := docTokens + estimateExtractTokens(systemPrompt, userPrompt)
 
 	temp := float32(c.temperature)
 	genConfig := &genai.GenerateContentConfig{
@@ -385,7 +388,12 @@ func (c *Client) CallSyncWithUploadedFile(ctx context.Context, systemPrompt, use
 	}
 
 	resp, err := withGenAIRetry(ctx, c, "models.generateContent", limiterGate(c.extractRateLimiter, estimatedTokens), func() (*genai.GenerateContentResponse, error) {
-		return c.client.Models.GenerateContent(ctx, c.extractModel, contents, genConfig)
+		r, genErr := c.client.Models.GenerateContent(ctx, c.extractModel, contents, genConfig)
+		if genErr == nil && r != nil && r.UsageMetadata != nil {
+			actual := int(r.UsageMetadata.PromptTokenCount) + int(r.UsageMetadata.CandidatesTokenCount)
+			c.extractRateLimiter.Reconcile(estimatedTokens, actual)
+		}
+		return r, genErr
 	})
 	if err != nil {
 		return "", fmt.Errorf("gemini generate content failed: %w", err)
@@ -405,11 +413,15 @@ func (c *Client) CallSyncWithPDF(ctx context.Context, systemPrompt, userPrompt, 
 }
 
 func (c *Client) CallSyncWithPDFProviderAndCache(ctx context.Context, systemPrompt, userPrompt, pdfPath string, fileProvider func() (*genai.File, error), useCache bool) (string, error) {
+	docTokens := pdfFallbackTokens
 	var hash string
+	info, infoErr := InspectPDF(pdfPath)
+	if infoErr == nil {
+		docTokens = info.EstimatedTokens()
+	}
 	if useCache && c.cache != nil {
-		var err error
-		hash, err = HashPDFPrompt(c.extractModel, systemPrompt, userPrompt, pdfPath)
-		if err == nil {
+		if infoErr == nil {
+			hash = hashPromptWithDigest(c.extractModel, systemPrompt, userPrompt, info.SHA256)
 			if cached, ok := c.cache.Get(hash); ok {
 				c.logger.Info().Str("hash", hash[:8]).Msg("[CACHE HIT] Using cached LLM response")
 				return cached, nil
@@ -425,7 +437,7 @@ func (c *Client) CallSyncWithPDFProviderAndCache(ctx context.Context, systemProm
 		return "", err
 	}
 
-	resp, err := c.CallSyncWithUploadedFile(ctx, systemPrompt, userPrompt, uploadedFile)
+	resp, err := c.callSyncWithUploadedFile(ctx, systemPrompt, userPrompt, uploadedFile, docTokens)
 	if err != nil {
 		return "", err
 	}
@@ -644,6 +656,10 @@ func (c *Client) CallDecisionsWithCache(ctx context.Context, userPrompt string, 
 }
 
 func (c *Client) CallDecisionsWithFileURI(ctx context.Context, userPrompt, fileURI string, questions map[string]tagging.DecisionQuestion) (string, error) {
+	return c.callDecisionsWithFileURI(ctx, userPrompt, fileURI, questions, pdfFallbackTokens)
+}
+
+func (c *Client) callDecisionsWithFileURI(ctx context.Context, userPrompt, fileURI string, questions map[string]tagging.DecisionQuestion, docTokens int) (string, error) {
 	if len(questions) == 0 {
 		return "", fmt.Errorf("no decision questions provided")
 	}
@@ -651,7 +667,7 @@ func (c *Client) CallDecisionsWithFileURI(ctx context.Context, userPrompt, fileU
 		return "", fmt.Errorf("uploaded PDF file URI is required")
 	}
 
-	estimatedTokens := pdfBaseTokens + estimateDecisionTokens(userPrompt, questions)
+	estimatedTokens := docTokens + estimateDecisionTokens(userPrompt, questions)
 
 	inputBlocks := []decisionInputPart{
 		{
@@ -673,15 +689,20 @@ func (c *Client) CallDecisionsWithPDFProviderAndCache(ctx context.Context, userP
 		return "", fmt.Errorf("no decision questions provided")
 	}
 
+	docTokens := pdfFallbackTokens
 	var hash string
+	info, infoErr := InspectPDF(pdfPath)
+	if infoErr == nil {
+		docTokens = info.EstimatedTokens()
+	}
 	if useCache && c.cache != nil {
 		questionsKey, err := serializeQuestionsForHash(questions)
 		if err != nil {
 			return "", err
 		}
 
-		hash, err = HashPDFPrompt(c.decisionModel, questionsKey, userPrompt, pdfPath)
-		if err == nil {
+		if infoErr == nil {
+			hash = hashPromptWithDigest(c.decisionModel, questionsKey, userPrompt, info.SHA256)
 			if cached, ok := c.cache.Get(hash); ok {
 				c.logger.Info().Str("hash", hash[:8]).Msg("[CACHE HIT] Using cached decisions response")
 				return cached, nil
@@ -700,7 +721,7 @@ func (c *Client) CallDecisionsWithPDFProviderAndCache(ctx context.Context, userP
 		return "", fmt.Errorf("uploaded PDF file is missing URI")
 	}
 
-	resp, err := c.CallDecisionsWithFileURI(ctx, userPrompt, uploadedFile.URI, questions)
+	resp, err := c.callDecisionsWithFileURI(ctx, userPrompt, uploadedFile.URI, questions, docTokens)
 	if err != nil {
 		return "", err
 	}
@@ -722,7 +743,7 @@ func (c *Client) CallDecisionsWithPDF(ctx context.Context, userPrompt, pdfPath s
 		return "", fmt.Errorf("failed to read PDF file for decisions API: %w", err)
 	}
 
-	estimatedTokens := pdfBaseTokens + estimateDecisionTokens(userPrompt, questions)
+	estimatedTokens := PDFInfo{Size: int64(len(pdfBytes))}.EstimatedTokens() + estimateDecisionTokens(userPrompt, questions)
 
 	inputBlocks := []decisionInputPart{
 		{

@@ -145,10 +145,26 @@ func (rl *RateLimiter) Wait(ctx context.Context, estimatedTokens int) error {
 	}
 
 	if estimatedTokens > 0 && rl.tpm.Limit() != rate.Inf {
+		// Clamp oversized requests to the burst so they wait for a full minute's
+		// budget instead of failing with "exceeds limiter's burst".
+		if burst := rl.tpm.Burst(); estimatedTokens > burst {
+			estimatedTokens = burst
+		}
 		if err := rl.tpm.WaitN(ctx, estimatedTokens); err != nil {
 			return err
 		}
 	}
 
 	return nil
+}
+
+// Reconcile charges tokens that were under-estimated, without blocking the caller;
+// subsequent waiters absorb the debt.
+func (rl *RateLimiter) Reconcile(estimated, actual int) {
+	if rl.tpm.Limit() == rate.Inf {
+		return
+	}
+	if delta := actual - estimated; delta > 0 {
+		rl.tpm.ReserveN(time.Now(), min(delta, rl.tpm.Burst()))
+	}
 }
