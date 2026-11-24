@@ -80,8 +80,27 @@ func init() {
 	rootCmd.AddCommand(tagCmd)
 }
 
+// gracefulContext cancels on the first SIGINT/SIGTERM, then restores default
+// signal handling so a second signal terminates the process immediately.
+func gracefulContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		defer signal.Stop(sigCh)
+		select {
+		case <-sigCh:
+			fmt.Fprintln(os.Stderr, "Shutting down gracefully... press Ctrl+C again to force quit")
+			signal.Reset(os.Interrupt, syscall.SIGTERM)
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
 func main() {
-	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	ctx, cancel := gracefulContext(context.Background())
 	defer cancel()
 
 	if err := rootCmd.ExecuteContext(ctx); err != nil {

@@ -54,7 +54,21 @@ func (c *Client) getLibraryPrefix(groupID string) string {
 	return fmt.Sprintf("/users/%s", c.cfg.UserID)
 }
 
-func (c *Client) doRequestFactory(reqFactory func() (*http.Request, error)) (*http.Response, error) {
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
+	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
+
+func (c *Client) doRequestFactory(ctx context.Context, reqFactory func() (*http.Request, error)) (*http.Response, error) {
 	maxRetries := c.cfg.Retries.MaxRetries
 	var resp *http.Response
 	var lastErr error
@@ -62,7 +76,12 @@ func (c *Client) doRequestFactory(reqFactory func() (*http.Request, error)) (*ht
 	for i := 0; i <= maxRetries; i++ {
 		if i > 0 {
 			backoff := time.Duration(c.cfg.Retries.BackoffBase*float64(i)) * time.Second
-			time.Sleep(backoff)
+			if err := sleepCtx(ctx, backoff); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
 		req, err := reqFactory()
@@ -77,6 +96,9 @@ func (c *Client) doRequestFactory(reqFactory func() (*http.Request, error)) (*ht
 
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			lastErr = err
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
@@ -93,12 +115,16 @@ func (c *Client) doRequestFactory(reqFactory func() (*http.Request, error)) (*ht
 				}
 			}
 			_ = resp.Body.Close()
-			time.Sleep(time.Duration(retryAfterSec) * time.Second)
+			lastErr = fmt.Errorf("zotero API returned status %d", resp.StatusCode)
+			if err := sleepCtx(ctx, time.Duration(retryAfterSec)*time.Second); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
 		if resp.StatusCode >= 500 {
 			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("zotero API returned status %d", resp.StatusCode)
 			continue
 		}
 
@@ -109,7 +135,7 @@ func (c *Client) doRequestFactory(reqFactory func() (*http.Request, error)) (*ht
 }
 
 func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
-	return c.doRequestFactory(func() (*http.Request, error) {
+	return c.doRequestFactory(req.Context(), func() (*http.Request, error) {
 		return req, nil
 	})
 }
@@ -302,7 +328,7 @@ func (c *Client) UpdateTags(ctx context.Context, itemKey string, version int, ta
 		return req, nil
 	}
 
-	resp, err := c.doRequestFactory(reqFactory)
+	resp, err := c.doRequestFactory(ctx, reqFactory)
 	if err != nil {
 		return fmt.Errorf("failed to update tags for item %s: %w", itemKey, err)
 	}
