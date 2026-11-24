@@ -26,11 +26,22 @@ type Client struct {
 }
 
 func NewClient(cfg config.ZoteroConfig) *Client {
+	if cfg.Retries.MaxRetries <= 0 {
+		cfg.Retries.MaxRetries = 3
+	}
+	if cfg.Retries.BackoffBase <= 0 {
+		cfg.Retries.BackoffBase = 1.0
+	}
+
 	return &Client{
 		httpClient: &http.Client{Timeout: 30 * time.Second},
 		cfg:        cfg,
 		baseURL:    "https://api.zotero.org",
 	}
+}
+
+func (c *Client) SetBaseURLForTest(url string) {
+	c.baseURL = url
 }
 
 func (c *Client) getLibraryPrefix(groupID string) string {
@@ -43,31 +54,52 @@ func (c *Client) getLibraryPrefix(groupID string) string {
 	return fmt.Sprintf("/users/%s", c.cfg.UserID)
 }
 
-func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
-	req.Header.Set("Zotero-API-Version", "3")
-	if c.cfg.APIKey != "" {
-		req.Header.Set("Zotero-API-Key", c.cfg.APIKey)
+func sleepCtx(ctx context.Context, d time.Duration) error {
+	if d <= 0 {
+		return ctx.Err()
 	}
+	t := time.NewTimer(d)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-t.C:
+		return nil
+	}
+}
 
+func (c *Client) doRequestFactory(ctx context.Context, reqFactory func() (*http.Request, error)) (*http.Response, error) {
 	maxRetries := c.cfg.Retries.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-
 	var resp *http.Response
 	var lastErr error
 
 	for i := 0; i <= maxRetries; i++ {
 		if i > 0 {
 			backoff := time.Duration(c.cfg.Retries.BackoffBase*float64(i)) * time.Second
-			time.Sleep(backoff)
+			if err := sleepCtx(ctx, backoff); err != nil {
+				return nil, err
+			}
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, err
 		}
 
-		var err error
+		req, err := reqFactory()
+		if err != nil {
+			return nil, err
+		}
+
+		req.Header.Set("Zotero-API-Version", "3")
+		if c.cfg.APIKey != "" {
+			req.Header.Set("Zotero-API-Key", c.cfg.APIKey)
+		}
+
 		resp, err = c.httpClient.Do(req)
 		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
 			lastErr = err
-			// Drain and close body on error if present (redirect errors)
 			if resp != nil {
 				_, _ = io.Copy(io.Discard, resp.Body)
 				_ = resp.Body.Close()
@@ -83,12 +115,16 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 				}
 			}
 			_ = resp.Body.Close()
-			time.Sleep(time.Duration(retryAfterSec) * time.Second)
+			lastErr = fmt.Errorf("zotero API returned status %d", resp.StatusCode)
+			if err := sleepCtx(ctx, time.Duration(retryAfterSec)*time.Second); err != nil {
+				return nil, err
+			}
 			continue
 		}
 
 		if resp.StatusCode >= 500 {
 			_ = resp.Body.Close()
+			lastErr = fmt.Errorf("zotero API returned status %d", resp.StatusCode)
 			continue
 		}
 
@@ -96,6 +132,12 @@ func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
 	}
 
 	return nil, fmt.Errorf("request failed after retries: %w", lastErr)
+}
+
+func (c *Client) doRequest(req *http.Request) (*http.Response, error) {
+	return c.doRequestFactory(req.Context(), func() (*http.Request, error) {
+		return req, nil
+	})
 }
 
 func (c *Client) FetchItems(ctx context.Context, opts FetchOptions) ([]Item, error) {
@@ -274,64 +316,34 @@ func (c *Client) UpdateTags(ctx context.Context, itemKey string, version int, ta
 		return err
 	}
 
-	maxRetries := c.cfg.Retries.MaxRetries
-	if maxRetries <= 0 {
-		maxRetries = 3
-	}
-
-	for i := 0; i <= maxRetries; i++ {
-		if i > 0 {
-			backoff := time.Duration(c.cfg.Retries.BackoffBase*float64(i)) * time.Second
-			time.Sleep(backoff)
-		}
-
-		// Rebuild request each attempt so the body reader is fresh.
-		req, err := http.NewRequestWithContext(ctx, "PATCH", c.baseURL+endpoint, bytes.NewReader(bodyBytes))
-		if err != nil {
-			return err
-		}
-
-		req.Header.Set("Zotero-API-Version", "3")
-		if c.cfg.APIKey != "" {
-			req.Header.Set("Zotero-API-Key", c.cfg.APIKey)
+	reqFactory := func() (*http.Request, error) {
+		req, reqErr := http.NewRequestWithContext(ctx, "PATCH", c.baseURL+endpoint, bytes.NewReader(bodyBytes))
+		if reqErr != nil {
+			return nil, reqErr
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if version > 0 {
 			req.Header.Set("If-Unmodified-Since-Version", strconv.Itoa(version))
 		}
-
-		resp, err := c.httpClient.Do(req)
-		if err != nil {
-			continue
-		}
-		_, _ = io.Copy(io.Discard, resp.Body)
-		_ = resp.Body.Close()
-
-		if resp.StatusCode == http.StatusPreconditionFailed {
-			return fmt.Errorf("%w for item %s", ErrPreconditionFailed, itemKey)
-		}
-
-		if resp.StatusCode == http.StatusTooManyRequests {
-			retryAfterSec := 5
-			if ra := resp.Header.Get("Retry-After"); ra != "" {
-				if parsed, pErr := strconv.Atoi(ra); pErr == nil {
-					retryAfterSec = parsed
-				}
-			}
-			time.Sleep(time.Duration(retryAfterSec) * time.Second)
-			continue
-		}
-
-		if resp.StatusCode >= 500 {
-			continue
-		}
-
-		if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
-			return nil
-		}
-
-		return fmt.Errorf("failed to update tags for item %s: status %d", itemKey, resp.StatusCode)
+		return req, nil
 	}
 
-	return fmt.Errorf("UpdateTags failed after retries for item %s", itemKey)
+	resp, err := c.doRequestFactory(ctx, reqFactory)
+	if err != nil {
+		return fmt.Errorf("failed to update tags for item %s: %w", itemKey, err)
+	}
+	defer func() {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		_ = resp.Body.Close()
+	}()
+
+	if resp.StatusCode == http.StatusPreconditionFailed {
+		return fmt.Errorf("%w for item %s", ErrPreconditionFailed, itemKey)
+	}
+
+	if resp.StatusCode == http.StatusNoContent || resp.StatusCode == http.StatusOK {
+		return nil
+	}
+
+	return fmt.Errorf("failed to update tags for item %s: status %d", itemKey, resp.StatusCode)
 }

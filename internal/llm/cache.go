@@ -43,6 +43,27 @@ func HashPrompt(model, systemPrompt, userPrompt string) string {
 	return hex.EncodeToString(hasher.Sum(nil))
 }
 
+func hashPromptWithDigest(model, systemPrompt, userPrompt string, pdfDigest [sha256.Size]byte) string {
+	hasher := sha256.New()
+	hasher.Write([]byte(model))
+	hasher.Write([]byte("|"))
+	hasher.Write([]byte(systemPrompt))
+	hasher.Write([]byte("|"))
+	hasher.Write([]byte(userPrompt))
+	hasher.Write([]byte("|"))
+	hasher.Write(pdfDigest[:])
+	return hex.EncodeToString(hasher.Sum(nil))
+}
+
+// HashPDFPrompt hashes the prompt plus the PDF content, streaming the file (constant memory).
+func HashPDFPrompt(model, systemPrompt, userPrompt, pdfPath string) (string, error) {
+	info, err := InspectPDF(pdfPath)
+	if err != nil {
+		return "", err
+	}
+	return hashPromptWithDigest(model, systemPrompt, userPrompt, info.SHA256), nil
+}
+
 func (c *DiskCache) Get(promptHash string) (string, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

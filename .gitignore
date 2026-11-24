@@ -1,4 +1,5 @@
 # Binaries
+/zotero-tagger
 *.exe
 *.exe;
 *.dll
