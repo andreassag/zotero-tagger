@@ -214,7 +214,19 @@ func isRetryableGenAIError(ctx context.Context, err error) bool {
 	return false
 }
 
-func withGenAIRetry[T any](ctx context.Context, c *Client, op string, fn func() (T, error)) (T, error) {
+// attemptGate runs before every attempt (including the first). Errors are terminal.
+type attemptGate func(ctx context.Context) error
+
+func limiterGate(rl *RateLimiter, tokens int) attemptGate {
+	return func(ctx context.Context) error {
+		if err := rl.Wait(ctx, tokens); err != nil {
+			return fmt.Errorf("rate limiter wait failed: %w", err)
+		}
+		return nil
+	}
+}
+
+func withGenAIRetry[T any](ctx context.Context, c *Client, op string, gate attemptGate, fn func() (T, error)) (T, error) {
 	var zero T
 	maxRetries := c.retries.MaxRetries
 	if maxRetries < 0 {
@@ -241,6 +253,12 @@ func withGenAIRetry[T any](ctx context.Context, c *Client, op string, fn func() 
 			}
 		}
 
+		if gate != nil {
+			if gateErr := gate(ctx); gateErr != nil {
+				return zero, gateErr
+			}
+		}
+
 		res, err := fn()
 		if err == nil {
 			return res, nil
@@ -261,9 +279,6 @@ func estimateExtractTokens(systemPrompt, userPrompt string) int {
 
 func (c *Client) CallSync(ctx context.Context, systemPrompt, userPrompt string) (string, error) {
 	estimatedTokens := estimateExtractTokens(systemPrompt, userPrompt)
-	if err := c.extractRateLimiter.Wait(ctx, estimatedTokens); err != nil {
-		return "", fmt.Errorf("rate limiter wait failed: %w", err)
-	}
 
 	temp := float32(c.temperature)
 	genConfig := &genai.GenerateContentConfig{
@@ -276,7 +291,7 @@ func (c *Client) CallSync(ctx context.Context, systemPrompt, userPrompt string) 
 		ResponseMIMEType: "application/json",
 	}
 
-	resp, err := withGenAIRetry(ctx, c, "models.generateContent", func() (*genai.GenerateContentResponse, error) {
+	resp, err := withGenAIRetry(ctx, c, "models.generateContent", limiterGate(c.extractRateLimiter, estimatedTokens), func() (*genai.GenerateContentResponse, error) {
 		return c.client.Models.GenerateContent(ctx, c.extractModel, genai.Text(userPrompt), genConfig)
 	})
 	if err != nil {
@@ -309,7 +324,7 @@ func (c *Client) CallSyncWithCache(ctx context.Context, systemPrompt, userPrompt
 
 func (c *Client) UploadPDF(ctx context.Context, pdfPath string) (*genai.File, func(), error) {
 	c.logger.Info().Str("path", pdfPath).Msg("Uploading PDF to Google GenAI...")
-	uploadedFile, err := withGenAIRetry(ctx, c, "files.upload", func() (*genai.File, error) {
+	uploadedFile, err := withGenAIRetry(ctx, c, "files.upload", nil, func() (*genai.File, error) {
 		return c.client.Files.UploadFromPath(ctx, pdfPath, &genai.UploadFileConfig{
 			MIMEType: "application/pdf",
 		})
@@ -343,9 +358,6 @@ func (c *Client) CallSyncWithUploadedFile(ctx context.Context, systemPrompt, use
 	}
 
 	estimatedTokens := pdfBaseTokens + estimateExtractTokens(systemPrompt, userPrompt)
-	if err := c.extractRateLimiter.Wait(ctx, estimatedTokens); err != nil {
-		return "", fmt.Errorf("rate limiter wait failed: %w", err)
-	}
 
 	temp := float32(c.temperature)
 	genConfig := &genai.GenerateContentConfig{
@@ -372,7 +384,7 @@ func (c *Client) CallSyncWithUploadedFile(ctx context.Context, systemPrompt, use
 		},
 	}
 
-	resp, err := withGenAIRetry(ctx, c, "models.generateContent", func() (*genai.GenerateContentResponse, error) {
+	resp, err := withGenAIRetry(ctx, c, "models.generateContent", limiterGate(c.extractRateLimiter, estimatedTokens), func() (*genai.GenerateContentResponse, error) {
 		return c.client.Models.GenerateContent(ctx, c.extractModel, contents, genConfig)
 	})
 	if err != nil {
@@ -478,7 +490,7 @@ func sleepWithContext(ctx context.Context, d time.Duration) error {
 	}
 }
 
-func (c *Client) doDecisionRequest(ctx context.Context, input any, questions map[string]tagging.DecisionQuestion) (string, error) {
+func (c *Client) doDecisionRequest(ctx context.Context, input any, questions map[string]tagging.DecisionQuestion, estimatedTokens int) (string, error) {
 	if len(questions) == 0 {
 		return "", fmt.Errorf("no decision questions provided")
 	}
@@ -520,6 +532,11 @@ func (c *Client) doDecisionRequest(ctx context.Context, input any, questions map
 			}
 		}
 		skipNextBackoff = false
+
+		// Every HTTP attempt (including retries) consumes RPM/TPM/daily quota.
+		if waitErr := c.decisionRateLimiter.Wait(ctx, estimatedTokens); waitErr != nil {
+			return "", fmt.Errorf("rate limiter wait failed: %w", waitErr)
+		}
 
 		req, reqErr := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(bodyBytes))
 		if reqErr != nil {
@@ -593,12 +610,7 @@ func (c *Client) CallDecisions(ctx context.Context, userPrompt string, questions
 		return "", fmt.Errorf("no decision questions provided")
 	}
 
-	estimatedTokens := estimateDecisionTokens(userPrompt, questions)
-	if err := c.decisionRateLimiter.Wait(ctx, estimatedTokens); err != nil {
-		return "", fmt.Errorf("rate limiter wait failed: %w", err)
-	}
-
-	return c.doDecisionRequest(ctx, userPrompt, questions)
+	return c.doDecisionRequest(ctx, userPrompt, questions, estimateDecisionTokens(userPrompt, questions))
 }
 
 func (c *Client) CallDecisionsWithCache(ctx context.Context, userPrompt string, questions map[string]tagging.DecisionQuestion, useCache bool) (string, error) {
@@ -640,9 +652,6 @@ func (c *Client) CallDecisionsWithFileURI(ctx context.Context, userPrompt, fileU
 	}
 
 	estimatedTokens := pdfBaseTokens + estimateDecisionTokens(userPrompt, questions)
-	if err := c.decisionRateLimiter.Wait(ctx, estimatedTokens); err != nil {
-		return "", fmt.Errorf("rate limiter wait failed: %w", err)
-	}
 
 	inputBlocks := []decisionInputPart{
 		{
@@ -656,7 +665,7 @@ func (c *Client) CallDecisionsWithFileURI(ctx context.Context, userPrompt, fileU
 		},
 	}
 
-	return c.doDecisionRequest(ctx, inputBlocks, questions)
+	return c.doDecisionRequest(ctx, inputBlocks, questions, estimatedTokens)
 }
 
 func (c *Client) CallDecisionsWithPDFProviderAndCache(ctx context.Context, userPrompt, pdfPath string, questions map[string]tagging.DecisionQuestion, fileProvider func() (*genai.File, error), useCache bool) (string, error) {
@@ -714,9 +723,6 @@ func (c *Client) CallDecisionsWithPDF(ctx context.Context, userPrompt, pdfPath s
 	}
 
 	estimatedTokens := pdfBaseTokens + estimateDecisionTokens(userPrompt, questions)
-	if err := c.decisionRateLimiter.Wait(ctx, estimatedTokens); err != nil {
-		return "", fmt.Errorf("rate limiter wait failed: %w", err)
-	}
 
 	inputBlocks := []decisionInputPart{
 		{
@@ -730,7 +736,7 @@ func (c *Client) CallDecisionsWithPDF(ctx context.Context, userPrompt, pdfPath s
 		},
 	}
 
-	return c.doDecisionRequest(ctx, inputBlocks, questions)
+	return c.doDecisionRequest(ctx, inputBlocks, questions, estimatedTokens)
 }
 
 func (c *Client) CallDecisionsWithPDFAndCache(ctx context.Context, userPrompt, pdfPath string, questions map[string]tagging.DecisionQuestion, useCache bool) (string, error) {

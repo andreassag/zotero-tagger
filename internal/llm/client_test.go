@@ -794,3 +794,100 @@ func TestCallDecisions_RetriesTransientNetworkErrorAndAbortsOnCancel(t *testing.
 	assert.ErrorIs(t, err, context.Canceled)
 	assert.Equal(t, int32(1), calls.Load())
 }
+
+func TestCallSync_RetriesConsumeDailyQuota(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"boom","status":"INTERNAL"}}`))
+	}))
+	defer server.Close()
+
+	client, err := newTestClient(server.URL, server.Client())
+	require.NoError(t, err)
+	client.retries = config.RetryConfig{MaxRetries: 3, BackoffBase: 0.001}
+	client.extractRateLimiter = NewNamedRateLimiter("extract", config.RateLimitConfig{RequestsPerDay: 2})
+
+	_, err = client.CallSync(context.Background(), "sys", "user")
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daily rate limit exceeded")
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestCallSyncWithUploadedFile_RetriesConsumeDailyQuota(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls.Add(1)
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":{"code":500,"message":"boom","status":"INTERNAL"}}`))
+	}))
+	defer server.Close()
+
+	client, err := newTestClient(server.URL, server.Client())
+	require.NoError(t, err)
+	client.retries = config.RetryConfig{MaxRetries: 3, BackoffBase: 0.001}
+	client.extractRateLimiter = NewNamedRateLimiter("extract", config.RateLimitConfig{RequestsPerDay: 2})
+
+	_, err = client.CallSyncWithUploadedFile(context.Background(), "sys", "user", &genai.File{
+		Name: "files/x", URI: "https://example.test/files/x", MIMEType: "application/pdf",
+	})
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daily rate limit exceeded")
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestCallDecisions_RetriesConsumeDailyQuota(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) == 1 {
+			w.Header().Set("Retry-After", "0")
+			w.WriteHeader(http.StatusTooManyRequests)
+			return
+		}
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	defer server.Close()
+
+	client, err := newTestClient(server.URL, server.Client())
+	require.NoError(t, err)
+	client.retries = config.RetryConfig{MaxRetries: 3, BackoffBase: 0.001}
+	client.decisionRateLimiter = NewNamedRateLimiter("decisions", config.RateLimitConfig{RequestsPerDay: 2})
+
+	questions := tagging.BuildTopicDecisionQuestions([]string{"biofilm"})
+	_, err = client.CallDecisions(context.Background(), "Title: Study", questions)
+	require.Error(t, err)
+	assert.Contains(t, err.Error(), "daily rate limit exceeded")
+	assert.Equal(t, int32(2), calls.Load())
+}
+
+func TestUploadPDF_DoesNotConsumeModelQuota(t *testing.T) {
+	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"candidates":[{"content":{"parts":[{"text":"{}"}],"role":"model"},"finishReason":"STOP"}]}`))
+	}))
+	defer server.Close()
+
+	client, err := newTestClient(server.URL, server.Client())
+	require.NoError(t, err)
+	client.extractRateLimiter = NewNamedRateLimiter("extract", config.RateLimitConfig{RequestsPerDay: 1})
+
+	// withGenAIRetry with a nil gate (as used by files.upload) must not touch the limiter.
+	calls := 0
+	_, err = withGenAIRetry(context.Background(), client, "files.upload", nil, func() (int, error) {
+		calls++
+		return calls, nil
+	})
+	require.NoError(t, err)
+
+	_, err = client.CallSync(context.Background(), "sys", "user")
+	require.NoError(t, err)
+}
